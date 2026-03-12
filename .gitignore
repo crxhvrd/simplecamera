@@ -23,6 +23,7 @@ tmp/
 *.tlog
 *.lastbuildstate
 *.unsuccessfulbuild
+*.zip
 
 # External dependencies (optional: if you want them in the repo don't ignore them, 
 # but usually large binary dependencies or submodules are handled differently. 
