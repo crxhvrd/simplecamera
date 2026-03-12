@@ -1,0 +1,119 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClInclude Include="ScreenshotController.h">
+      <Filter>Include</Filter>
+    </ClInclude>
+    <ClInclude Include="stdafx.h">
+      <Filter>Include</Filter>
+    </ClInclude>
+    <ClInclude Include="resource.h">
+      <Filter>Include</Filter>
+    </ClInclude>
+    <ClInclude Include="CameraToolsData.h">
+      <Filter>Include</Filter>
+    </ClInclude>
+    <ClInclude Include="ScreenshotSettings.h">
+      <Filter>Include</Filter>
+    </ClInclude>
+    <ClInclude Include="ConstantsEnums.h">
+      <Filter>Include</Filter>
+    </ClInclude>
+    <ClInclude Include="OverlayControl.h">
+      <Filter>Include</Filter>
+    </ClInclude>
+    <ClInclude Include="Utils.h">
+      <Filter>Include</Filter>
+    </ClInclude>
+    <ClInclude Include="std_image_write.h">
+      <Filter>ExternalCode</Filter>
+    </ClInclude>
+    <ClInclude Include="fpng.h">
+      <Filter>Include</Filter>
+    </ClInclude>
+    <ClInclude Include="ReshadeStateSnapshot.h">
+      <Filter>Include</Filter>
+    </ClInclude>
+    <ClInclude Include="EffectState.h">
+      <Filter>Include</Filter>
+    </ClInclude>
+    <ClInclude Include="ReshadeStateController.h">
+      <Filter>Include</Filter>
+    </ClInclude>
+    <ClInclude Include="CameraPathData.h">
+      <Filter>Include</Filter>
+    </ClInclude>
+    <ClInclude Include="ThreadSafeQueue.h">
+      <Filter>Include</Filter>
+    </ClInclude>
+    <ClInclude Include="WorkItem.h">
+      <Filter>Include</Filter>
+    </ClInclude>
+    <ClInclude Include="CameraToolsConnector.h">
+      <Filter>Include</Filter>
+    </ClInclude>
+    <ClInclude Include="DepthOfFieldController.h">
+      <Filter>Include</Filter>
+    </ClInclude>
+    <ClInclude Include="CDataFile.h">
+      <Filter>Include</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Code">
+      <UniqueIdentifier>{1f48c677-d76d-4019-94d5-d7fc70fb1939}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Include">
+      <UniqueIdentifier>{043af029-51dd-420c-ab21-d585819a3db4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Misc">
+      <UniqueIdentifier>{5aefa35f-236b-4b85-899f-79469769608c}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="ExternalCode">
+      <UniqueIdentifier>{8e93d6a9-a83f-4aa0-8d41-0c6b0c653552}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Main.cpp">
+      <Filter>Code</Filter>
+    </ClCompile>
+    <ClCompile Include="ScreenshotController.cpp">
+      <Filter>Code</Filter>
+    </ClCompile>
+    <ClCompile Include="OverlayControl.cpp">
+      <Filter>Code</Filter>
+    </ClCompile>
+    <ClCompile Include="Utils.cpp">
+      <Filter>Code</Filter>
+    </ClCompile>
+    <ClCompile Include="fpng.cpp">
+      <Filter>Code</Filter>
+    </ClCompile>
+    <ClCompile Include="ReshadeStateSnapshot.cpp">
+      <Filter>Code</Filter>
+    </ClCompile>
+    <ClCompile Include="EffectState.cpp">
+      <Filter>Code</Filter>
+    </ClCompile>
+    <ClCompile Include="ReshadeStateController.cpp">
+      <Filter>Code</Filter>
+    </ClCompile>
+    <ClCompile Include="CameraPathData.cpp">
+      <Filter>Code</Filter>
+    </ClCompile>
+    <ClCompile Include="CameraToolsConnector.cpp">
+      <Filter>Code</Filter>
+    </ClCompile>
+    <ClCompile Include="DepthOfFieldController.cpp">
+      <Filter>Code</Filter>
+    </ClCompile>
+    <ClCompile Include="CDataFile.cpp">
+      <Filter>Code</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="IgcsConnector.rc">
+      <Filter>Misc</Filter>
+    </ResourceCompile>
+  </ItemGroup>
+</Project>

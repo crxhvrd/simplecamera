@@ -1,0 +1,35 @@
+# Visual Studio
+.vs/
+*.sln.doccache
+*.suo
+*.user
+*.userosscache
+*.sln.ids
+*.cache
+*.db
+*.opendb
+*.ipch
+
+# Build outputs
+bin/
+tmp/
+*.asi
+*.lib
+*.exp
+*.pdb
+*.recipe
+*.obj
+*.log
+*.tlog
+*.lastbuildstate
+*.unsuccessfulbuild
+
+# External dependencies (optional: if you want them in the repo don't ignore them, 
+# but usually large binary dependencies or submodules are handled differently. 
+# User asked to upload "whole source code with externals", so I'll keep them.)
+
+# Logs
+logs/
+
+# Backup
+backup/
