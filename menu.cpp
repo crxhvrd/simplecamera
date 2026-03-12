@@ -222,16 +222,16 @@ static void GetMenuButtons(bool *select, bool *back, bool *up, bool *down,
             PAD::IS_DISABLED_CONTROL_JUST_PRESSED(0, 202);
   if (up)
     *up = IsKeyDown(VK_NUMPAD8) || IsKeyDown(VK_UP) ||
-          PAD::IS_DISABLED_CONTROL_JUST_PRESSED(0, 188);
+          PAD::IS_DISABLED_CONTROL_PRESSED(0, 188);
   if (down)
     *down = IsKeyDown(VK_NUMPAD2) || IsKeyDown(VK_DOWN) ||
-            PAD::IS_DISABLED_CONTROL_JUST_PRESSED(0, 187);
+            PAD::IS_DISABLED_CONTROL_PRESSED(0, 187);
   if (right)
     *right = IsKeyDown(VK_NUMPAD6) || IsKeyDown(VK_RIGHT) ||
-             PAD::IS_DISABLED_CONTROL_JUST_PRESSED(0, 190);
+             PAD::IS_DISABLED_CONTROL_PRESSED(0, 190);
   if (left)
     *left = IsKeyDown(VK_NUMPAD4) || IsKeyDown(VK_LEFT) ||
-            PAD::IS_DISABLED_CONTROL_JUST_PRESSED(0, 189);
+            PAD::IS_DISABLED_CONTROL_PRESSED(0, 189);
 }
 
 // ============================================================
@@ -297,7 +297,7 @@ static void ProcessMovementMenu() {
   DWORD waitTime = 150;
   while (true) {
     // Dynamic line count
-    int lineCount = 8; // Speed, Sensitivity, Zoom Speed, Collision, Lock Height, Acro Mode,
+    int lineCount = 9; // Speed, Sensitivity, Zoom Speed, Roll Speed, Collision, Lock Height, Acro Mode,
                        // Follow Target, Drone Mode
     if (g_FollowMode == 1) {
       lineCount += 1; // "Rigid Mode"
@@ -325,6 +325,9 @@ static void ProcessMovementMenu() {
                     9.0, 60.0 + row * 36.0, 0.0, 9.0, activeIdx == row);
       row++;
       DrawMenuValue("Zoom Speed", FormatFloat(g_ZoomSpeed), lineWidth, 9.0,
+                    60.0 + row * 36.0, 0.0, 9.0, activeIdx == row);
+      row++;
+      DrawMenuValue("Roll Speed", FormatFloat(g_RollSpeed), lineWidth, 9.0,
                     60.0 + row * 36.0, 0.0, 9.0, activeIdx == row);
       row++;
       DrawMenuValue("World Collision", FormatBool(g_CamCollision), lineWidth, 9.0,
@@ -466,26 +469,26 @@ static void ProcessMovementMenu() {
       waitTime = 150;
     }
 
-    int collisionIdx = 3;
-    int lockHeightIdx = 4;
-    int rotationIdx = 5;
-    int followIdx = 6;
-
+    int collisionIdx = 4;
+    int lockHeightIdx = 5;
+    int rotationIdx = 6;
+    int followIdx = 7;
+ 
     int lockIdx = -1;
     int markerIdx = -1;
     int rigidIdx = -1;
-    int droneToggleIdx = 7;
-
+    int droneToggleIdx = 8;
+ 
     if (g_FollowMode == 1) {
-      rigidIdx = 7;
-      droneToggleIdx = 8;
+      rigidIdx = 8;
+      droneToggleIdx = 9;
     } else if (g_FollowMode == 2) {
-      lockIdx = 7;
-      droneToggleIdx = 8;
+      lockIdx = 8;
+      droneToggleIdx = 9;
       if (g_FollowTargetEntity != 0) {
-        markerIdx = 8;
-        rigidIdx = 9;
-        droneToggleIdx = 10;
+        markerIdx = 9;
+        rigidIdx = 10;
+        droneToggleIdx = 11;
       }
     }
 
@@ -590,6 +593,10 @@ static void ProcessMovementMenu() {
         g_ZoomSpeed += 0.1f;
         if (g_ZoomSpeed > 10.0f)
           g_ZoomSpeed = 10.0f;
+      } else if (activeIdx == 3) {
+        g_RollSpeed += 0.1f;
+        if (g_RollSpeed > 10.0f)
+          g_RollSpeed = 10.0f;
       } else if (activeIdx == followIdx) {
         g_FollowMode = (g_FollowMode + 1) % 3;
         if (g_FollowMode == 1 && g_MovePlayerWithCamera) {
@@ -652,6 +659,10 @@ static void ProcessMovementMenu() {
         g_ZoomSpeed -= 0.1f;
         if (g_ZoomSpeed < 0.1f)
           g_ZoomSpeed = 0.1f;
+      } else if (activeIdx == 3) {
+        g_RollSpeed -= 0.1f;
+        if (g_RollSpeed < 0.1f)
+          g_RollSpeed = 0.1f;
       } else if (activeIdx == followIdx) {
         g_FollowMode = (g_FollowMode == 0) ? 2 : g_FollowMode - 1;
         if (g_FollowMode == 1 && g_MovePlayerWithCamera) {

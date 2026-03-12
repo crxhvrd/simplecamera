@@ -44,6 +44,7 @@ float g_CamSpeed = 1.0f;
 float g_CamSensitivity = 1.0f;
 float g_CamFOV = 50.0f;
 float g_CamRoll = 0.0f;
+float g_RollSpeed = 1.0f;
 float g_ZoomSpeed = 1.0f;
 bool g_MovePlayerWithCamera = false;
 bool g_LockCamera = false;
@@ -586,6 +587,8 @@ void UpdateFreeCamera() {
       rollDelta -= 45.0f * dt;
     if (PAD::IS_DISABLED_CONTROL_PRESSED(0, INPUT_FRONTEND_RB))
       rollDelta += 45.0f * dt;
+
+    rollDelta *= g_RollSpeed;
 
     if (g_DroneMode && !g_RotationEngine) {
       // Auto-banking: camera tilts into yaw turns
