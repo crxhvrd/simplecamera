@@ -1068,7 +1068,7 @@ static void ProcessTimeWeatherMenu() {
             g_TimeHour = 0;
 
           if (!g_TimePaused) {
-            TIME::SET_CLOCK_TIME(g_TimeHour, g_TimeMinute, 0);
+            SetClockTime(g_TimeHour, g_TimeMinute, 0);
           }
         }
         waitTime = 200;
@@ -1139,7 +1139,7 @@ static void ProcessTimeWeatherMenu() {
         g_TimeHour   = totalMinutes / 60;
         g_TimeMinute = totalMinutes % 60;
         if (!g_TimePaused) {
-          TIME::SET_CLOCK_TIME(g_TimeHour, g_TimeMinute, 0);
+          SetClockTime(g_TimeHour, g_TimeMinute, 0);
         }
         waitTime = timeWait;
       } break;
@@ -1171,7 +1171,7 @@ static void ProcessTimeWeatherMenu() {
         g_TimeHour   = totalMinutes / 60;
         g_TimeMinute = totalMinutes % 60;
         if (!g_TimePaused) {
-          TIME::SET_CLOCK_TIME(g_TimeHour, g_TimeMinute, 0);
+          SetClockTime(g_TimeHour, g_TimeMinute, 0);
         }
         waitTime = timeWait;
       } break;

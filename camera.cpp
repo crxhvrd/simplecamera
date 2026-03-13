@@ -90,6 +90,8 @@ const char *g_WeatherNames[] = {
     "SNOWLIGHT", "BLIZZARD",   "NEUTRAL", "SNOW"};
 const int g_WeatherCount = sizeof(g_WeatherNames) / sizeof(g_WeatherNames[0]);
 
+bool g_IsFiveM = false;
+
 // ---- Misc ----
 bool g_HideHUD = false;
 bool g_HidePlayer = false;
@@ -97,6 +99,43 @@ bool g_RememberCamPosition = false;
 bool g_FreezeWorld = false;
 bool g_ShowInfoOverlay = false;
 bool g_ShowLockedEntityMarker = true;
+
+// ============================================================
+//  Functions
+// ============================================================
+
+void DetectFiveM() {
+  g_IsFiveM = (GetModuleHandleA("FiveM.exe") != NULL ||
+               GetModuleHandleA("CitizenGame.dll") != NULL);
+}
+
+void SetClockTime(int hour, int minute, int second) {
+  if (g_IsFiveM) {
+    // We use multiple natives for FiveM to ensure the time change sticks,
+    // especially in Story Mode or when other scripts/sync might interfere.
+    // 1. Standard SET_CLOCK_TIME (0x47C3B5848C3E45D8)
+    invoke<Void>(0x47C3B5848C3E45D8, hour, minute, second);
+    // 2. ADVANCE_CLOCK_TIME_TO (0xC8CA9670B9D83B3B)
+    invoke<Void>(0xC8CA9670B9D83B3B, hour, minute, second);
+    // 3. NETWORK_OVERRIDE_CLOCK_TIME (0xE679E3E06E363892)
+    invoke<Void>(0xE679E3E06E363892, hour, minute, second);
+  } else {
+    TIME::SET_CLOCK_TIME(hour, minute, second);
+  }
+}
+
+void SetWeatherTransition(Hash w1, Hash w2, float blend) {
+  if (g_IsFiveM) {
+    // FiveM Native: _SET_WEATHER_TYPE_TRANSITION(weatherType1, weatherType2,
+    // percentWeather2)
+    // Hash: 0x578C752848ECFA0C
+    invoke<Void>(0x578C752848ECFA0C, w1, w2, blend);
+  } else {
+    // SP native hash for _SET_WEATHER_TYPE_TRANSITION is the same,
+    // but we use the explicit call to match the pattern or existing script calls.
+    invoke<Void>(0x578C752848ECFA0C, w1, w2, blend);
+  }
+}
 
 // ---- Internal camera state ----
 
@@ -1208,7 +1247,7 @@ void UpdateFreeCamera() {
 void UpdateTimeWeather() {
   if (g_TimePaused) {
     TIME::PAUSE_CLOCK(TRUE);
-    TIME::SET_CLOCK_TIME(g_TimeHour, g_TimeMinute, 0);
+    SetClockTime(g_TimeHour, g_TimeMinute, 0);
   } else {
     TIME::PAUSE_CLOCK(FALSE);
   }
@@ -1230,7 +1269,7 @@ void UpdateTimeWeather() {
         g_TimeMinute = 0;
         g_TimeHour = (g_TimeHour + 1) % 24;
       }
-      TIME::SET_CLOCK_TIME(g_TimeHour, g_TimeMinute, 0);
+      SetClockTime(g_TimeHour, g_TimeMinute, 0);
       lastLapseTick = currentTick;
     }
   }
@@ -1239,8 +1278,7 @@ void UpdateTimeWeather() {
   if (g_BlendWeatherActive && g_WeatherBlend > 0.0f) {
     Hash w1 = GAMEPLAY::GET_HASH_KEY((char *)g_WeatherNames[g_Weather1Index]);
     Hash w2 = GAMEPLAY::GET_HASH_KEY((char *)g_WeatherNames[g_Weather2Index]);
-    invoke<Void>(0x578C752848ECFA0C, w1, w2,
-                 g_WeatherBlend); // _SET_WEATHER_TYPE_TRANSITION
+    SetWeatherTransition(w1, w2, g_WeatherBlend);
   }
 }
 

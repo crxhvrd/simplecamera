@@ -20,6 +20,9 @@
 // ============================================================
 
 void main() {
+  // Detect if running in FiveM
+  DetectFiveM();
+
   // Load INI settings
   LoadSettings();
 

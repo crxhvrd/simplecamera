@@ -73,14 +73,21 @@ extern bool g_FreezeWorld;
 extern bool g_ShowInfoOverlay;
 extern bool g_ShowLockedEntityMarker;
 
+extern bool g_IsFiveM;
+
 // ---- Functions ----
 
+void DetectFiveM();
 void InitFreeCamera();
 void DestroyFreeCamera();
 void UpdateFreeCamera();
 void UpdateTimeWeather();
 void UpdateGlobalEffects();
 void DrawInfoOverlay();
+
+// Native wrappers for compatibility
+void SetClockTime(int hour, int minute, int second);
+void SetWeatherTransition(Hash w1, Hash w2, float blend);
 
 // IGCS Connector support
 void IGCS_ResetOffsets();
