@@ -67,6 +67,7 @@ extern const int g_WeatherCount;
 // ---- Misc ----
 
 extern bool g_HideHUD;
+extern bool g_DisableVehicleShake;
 extern bool g_HidePlayer;
 extern bool g_RememberCamPosition;
 extern bool g_FreezeWorld;

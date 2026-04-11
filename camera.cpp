@@ -94,6 +94,7 @@ bool g_IsFiveM = false;
 
 // ---- Misc ----
 bool g_HideHUD = false;
+bool g_DisableVehicleShake = false;
 bool g_HidePlayer = false;
 bool g_RememberCamPosition = false;
 bool g_FreezeWorld = false;
@@ -1313,6 +1314,11 @@ void UpdateGlobalEffects() {
       ENTITY::SET_ENTITY_VISIBLE(playerPed, TRUE, FALSE);
       s_PlayerWasHiddenByUs = false;
     }
+  }
+
+  // Vehicle Shake Disabler
+  if (g_DisableVehicleShake) {
+    invoke<Void>(0x84FD40F56075E816, 0.0f);
   }
 }
 

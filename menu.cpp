@@ -1248,7 +1248,7 @@ static void ProcessTimeWeatherMenu() {
 
 static void ProcessMiscMenu() {
   const float lineWidth = 300.0f;
-  const int lineCount = 7;
+  const int lineCount = 8;
   int activeIdx = 0;
 
   DWORD waitTime = 150;
@@ -1282,6 +1282,8 @@ static void ProcessMiscMenu() {
                     60.0 + 5 * 36.0, 0.0, 9.0, activeIdx == 5);
       DrawMenuValue("Allow Player to Move", FormatBool(g_EnablePlayerMovement),
                     lineWidth, 9.0, 60.0 + 6 * 36.0, 0.0, 9.0, activeIdx == 6);
+      DrawMenuValue("Disable Vehicle Shake", FormatBool(g_DisableVehicleShake),
+                    lineWidth, 9.0, 60.0 + 7 * 36.0, 0.0, 9.0, activeIdx == 7);
 
       if (g_FreeCamActive)
         UpdateFreeCamera();
@@ -1373,6 +1375,11 @@ static void ProcessMiscMenu() {
         }
         SetStatusText(g_EnablePlayerMovement ? "Player movement enabled"
                                              : "Player movement disabled");
+        break;
+      case 7:
+        g_DisableVehicleShake = !g_DisableVehicleShake;
+        SetStatusText(g_DisableVehicleShake ? "Vehicle shake disabled"
+                                            : "Vehicle shake enabled");
         break;
       }
       waitTime = 200;
