@@ -292,6 +292,40 @@ static bool PromptForFloat(float &outVal, float currentVal) {
 }
 
 // ============================================================
+//  Viewport scrolling for long submenus
+// ============================================================
+//
+// Several submenus can grow taller than the screen: Movement Settings
+// (Drone Mode + Aimed Entity follow can stack to ~20 rows) and the
+// Pose Keyframes / Effect Events list menus (unbounded). Rather than
+// shrink rows or omit options, we cap visible rows at
+// kMaxVisibleListRows and slide a scroll window over the logical row
+// range, keeping the selected row in view. The window auto-scrolls
+// when the cursor would otherwise leave it; the title bar shows the
+// visible range (e.g. "[5-16 / 32]") so the user always knows where
+// they are.
+//
+// Declared here so every submenu below has the symbols in scope.
+
+static const int kMaxVisibleListRows = 12;
+
+// Adjusts `scrollOffset` so that `activeIdx` is visible within a
+// window of `kMaxVisibleListRows` rows over a list of `lineCount` total
+// rows. Idempotent — call before each frame's render pass.
+static void EnsureRowVisible(int activeIdx, int lineCount, int &scrollOffset) {
+  int maxOffset = lineCount - kMaxVisibleListRows;
+  if (maxOffset < 0) maxOffset = 0;
+  // Scroll up to bring the cursor into view from above
+  if (activeIdx < scrollOffset) scrollOffset = activeIdx;
+  // Scroll down to bring the cursor into view from below
+  if (activeIdx >= scrollOffset + kMaxVisibleListRows)
+    scrollOffset = activeIdx - kMaxVisibleListRows + 1;
+  // Clamp final offset
+  if (scrollOffset < 0) scrollOffset = 0;
+  if (scrollOffset > maxOffset) scrollOffset = maxOffset;
+}
+
+// ============================================================
 //  Sub-Menu: Movement Settings
 // ============================================================
 
@@ -299,6 +333,13 @@ static void ProcessMovementMenu() {
   const float lineWidth = 300.0f;
   static bool s_LockFailed = false;
   int activeIdx = 0;
+  // Movement Settings can balloon to ~20 rows when Drone Mode + Aimed
+  // Entity follow are both active, which overflows the screen. We use
+  // the same viewport-scrolling pattern as the Pose Keyframes / Effect
+  // Events list menus: cap visible rows at kMaxVisibleListRows and slide
+  // a window over the logical row range. scrollOffset survives loop
+  // iterations so the viewport doesn't jump.
+  int scrollOffset = 0;
 
   DWORD waitTime = 150;
   while (true) {
@@ -317,10 +358,14 @@ static void ProcessMovementMenu() {
       }
     }
     if (g_DroneMode)
-      lineCount += 7; // Drone properties (including FOV Smoothing)
+      lineCount += 6; // Drone sub-options: Drag, Acc, Gravity, Banking, RotSmooth, FovSmooth
 
     if (activeIdx >= lineCount)
       activeIdx = lineCount - 1;
+    EnsureRowVisible(activeIdx, lineCount, scrollOffset);
+
+    int visEnd = scrollOffset + kMaxVisibleListRows;
+    if (visEnd > lineCount) visEnd = lineCount;
 
     DWORD maxTick = GetTickCount() + waitTime;
     do {
@@ -335,40 +380,68 @@ static void ProcessMovementMenu() {
       CONTROLS::DISABLE_CONTROL_ACTION(0, 167, TRUE);  // INPUT_SELECT_CHARACTER_FRANKLIN
       CONTROLS::DISABLE_CONTROL_ACTION(0, 168, TRUE);  // INPUT_SELECT_CHARACTER_TREVOR
       CONTROLS::DISABLE_CONTROL_ACTION(0, 169, TRUE);  // INPUT_SELECT_CHARACTER_MULTIPLAYER
-      DrawMenuLine("MOVEMENT SETTINGS", "", lineWidth, 15.0, 18.0, 0.0, 5.0,
-                   false, true);
+      // Title shows position when scrolled (X-Y / total) so the user
+      // always knows where they are even when only a slice is rendered.
+      char movTitle[64];
+      if (lineCount > kMaxVisibleListRows) {
+        sprintf_s(movTitle, "MOVEMENT SETTINGS  [%d-%d / %d]",
+                  scrollOffset + 1, visEnd, lineCount);
+      } else {
+        sprintf_s(movTitle, "MOVEMENT SETTINGS");
+      }
+      DrawMenuLine(movTitle, "", lineWidth, 15.0, 18.0, 0.0, 5.0, false, true);
+
+      // Per-row helpers — keep `row` incrementing as the logical index
+      // (so activeIdx comparisons stay valid for input handling); only
+      // call DrawMenuValue when the row is inside the visible window.
+      // rowTop maps a logical row to its visible Y position by sliding
+      // the viewport up by scrollOffset rows.
+      auto vis = [&](int r) {
+        return r >= scrollOffset && r < scrollOffset + kMaxVisibleListRows;
+      };
+      auto rowTop = [&](int r) { return 60.0f + (r - scrollOffset) * 36.0f; };
+
       int row = 0;
-      DrawMenuValue("Camera Speed", FormatFloat(g_CamSpeed), lineWidth, 9.0,
-                    60.0 + row * 36.0, 0.0, 9.0, activeIdx == row);
+      if (vis(row))
+        DrawMenuValue("Camera Speed", FormatFloat(g_CamSpeed), lineWidth, 9.0,
+                      rowTop(row), 0.0, 9.0, activeIdx == row);
       row++;
-      DrawMenuValue("Look Sensitivity", FormatFloat(g_CamSensitivity), lineWidth,
-                    9.0, 60.0 + row * 36.0, 0.0, 9.0, activeIdx == row);
+      if (vis(row))
+        DrawMenuValue("Look Sensitivity", FormatFloat(g_CamSensitivity),
+                      lineWidth, 9.0, rowTop(row), 0.0, 9.0, activeIdx == row);
       row++;
-      DrawMenuValue("Zoom Speed", FormatFloat(g_ZoomSpeed), lineWidth, 9.0,
-                    60.0 + row * 36.0, 0.0, 9.0, activeIdx == row);
+      if (vis(row))
+        DrawMenuValue("Zoom Speed", FormatFloat(g_ZoomSpeed), lineWidth, 9.0,
+                      rowTop(row), 0.0, 9.0, activeIdx == row);
       row++;
-      DrawMenuValue("Roll Speed", FormatFloat(g_RollSpeed), lineWidth, 9.0,
-                    60.0 + row * 36.0, 0.0, 9.0, activeIdx == row);
+      if (vis(row))
+        DrawMenuValue("Roll Speed", FormatFloat(g_RollSpeed), lineWidth, 9.0,
+                      rowTop(row), 0.0, 9.0, activeIdx == row);
       row++;
-      DrawMenuValue("World Collision", FormatBool(g_CamCollision), lineWidth, 9.0,
-                    60.0 + row * 36.0, 0.0, 9.0, activeIdx == row);
+      if (vis(row))
+        DrawMenuValue("World Collision", FormatBool(g_CamCollision), lineWidth,
+                      9.0, rowTop(row), 0.0, 9.0, activeIdx == row);
       row++;
-      DrawMenuValue("Lock Altitude", FormatBool(g_LockHeight), lineWidth, 9.0,
-                    60.0 + row * 36.0, 0.0, 9.0, activeIdx == row);
+      if (vis(row))
+        DrawMenuValue("Lock Altitude", FormatBool(g_LockHeight), lineWidth, 9.0,
+                      rowTop(row), 0.0, 9.0, activeIdx == row);
       row++;
-      DrawMenuValue("Walk Mode", FormatBool(g_WalkMode), lineWidth, 9.0,
-                    60.0 + row * 36.0, 0.0, 9.0, activeIdx == row);
+      if (vis(row))
+        DrawMenuValue("Walk Mode", FormatBool(g_WalkMode), lineWidth, 9.0,
+                      rowTop(row), 0.0, 9.0, activeIdx == row);
       row++;
       if (g_WalkMode) {
-        DrawMenuValue("  - Walk Height (m)", FormatFloat(g_WalkHeight, 2),
-                      lineWidth, 9.0, 60.0 + row * 36.0, 0.0, 9.0,
-                      activeIdx == row);
+        if (vis(row))
+          DrawMenuValue("  - Walk Height (m)", FormatFloat(g_WalkHeight, 2),
+                        lineWidth, 9.0, rowTop(row), 0.0, 9.0,
+                        activeIdx == row);
         row++;
       }
 
       std::string rotEngineStr = g_RotationEngine ? "Acrobatic" : "Standard";
-      DrawMenuValue("Rotation Style", rotEngineStr, lineWidth, 9.0,
-                    60.0 + row * 36.0, 0.0, 9.0, activeIdx == row);
+      if (vis(row))
+        DrawMenuValue("Rotation Style", rotEngineStr, lineWidth, 9.0,
+                      rowTop(row), 0.0, 9.0, activeIdx == row);
       row++;
 
       // Follow Mode
@@ -377,31 +450,37 @@ static void ProcessMovementMenu() {
         followStr = "Player";
       else if (g_FollowMode == 2)
         followStr = "Aimed Entity";
-      DrawMenuValue("Follow Target", followStr, lineWidth, 9.0,
-                    60.0 + row * 36.0, 0.0, 9.0, activeIdx == row);
+      if (vis(row))
+        DrawMenuValue("Follow Target", followStr, lineWidth, 9.0, rowTop(row),
+                      0.0, 9.0, activeIdx == row);
       row++;
 
       if (g_FollowMode == 1) {
-        DrawMenuValue("  - Rigid Mode", FormatBool(g_FollowRigidMode), lineWidth,
-                      9.0, 60.0 + row * 36.0, 0.0, 9.0, activeIdx == row);
+        if (vis(row))
+          DrawMenuValue("  - Rigid Mode", FormatBool(g_FollowRigidMode),
+                        lineWidth, 9.0, rowTop(row), 0.0, 9.0,
+                        activeIdx == row);
         row++;
       } else if (g_FollowMode == 2) {
         std::string entityStr =
             (g_FollowTargetEntity == 0) ? "Click to Lock" : "Locked";
 
-        DrawMenuValue("  - Lock Entity", entityStr, lineWidth, 9.0,
-                      60.0 + row * 36.0, 0.0, 9.0, activeIdx == row);
+        if (vis(row))
+          DrawMenuValue("  - Lock Entity", entityStr, lineWidth, 9.0,
+                        rowTop(row), 0.0, 9.0, activeIdx == row);
         row++;
 
         if (g_FollowTargetEntity != 0) {
-          DrawMenuValue("  - Show Marker", FormatBool(g_ShowLockedEntityMarker),
-                        lineWidth, 9.0, 60.0 + row * 36.0, 0.0, 9.0,
-                        activeIdx == row);
+          if (vis(row))
+            DrawMenuValue("  - Show Marker",
+                          FormatBool(g_ShowLockedEntityMarker), lineWidth, 9.0,
+                          rowTop(row), 0.0, 9.0, activeIdx == row);
           row++;
 
-          DrawMenuValue("  - Rigid Mode", FormatBool(g_FollowRigidMode),
-                        lineWidth, 9.0, 60.0 + row * 36.0, 0.0, 9.0,
-                        activeIdx == row);
+          if (vis(row))
+            DrawMenuValue("  - Rigid Mode", FormatBool(g_FollowRigidMode),
+                          lineWidth, 9.0, rowTop(row), 0.0, 9.0,
+                          activeIdx == row);
           row++;
         }
 
@@ -444,29 +523,36 @@ static void ProcessMovementMenu() {
       }
 
       std::string moveStyleStr = g_DroneMode ? "Drone" : "Standard";
-      DrawMenuValue("Movement Style", moveStyleStr, lineWidth, 9.0,
-                    60.0 + row * 36.0, 0.0, 9.0, activeIdx == row);
+      if (vis(row))
+        DrawMenuValue("Movement Style", moveStyleStr, lineWidth, 9.0,
+                      rowTop(row), 0.0, 9.0, activeIdx == row);
       row++;
       if (g_DroneMode) {
-        DrawMenuValue("  - Drag", FormatFloat(g_DroneDrag), lineWidth, 9.0,
-                      60.0 + row * 36.0, 0.0, 9.0, activeIdx == row);
+        if (vis(row))
+          DrawMenuValue("  - Drag", FormatFloat(g_DroneDrag), lineWidth, 9.0,
+                        rowTop(row), 0.0, 9.0, activeIdx == row);
         row++;
-        DrawMenuValue("  - Acceleration", FormatFloat(g_DroneAcceleration),
-                      lineWidth, 9.0, 60.0 + row * 36.0, 0.0, 9.0,
-                      activeIdx == row);
+        if (vis(row))
+          DrawMenuValue("  - Acceleration", FormatFloat(g_DroneAcceleration),
+                        lineWidth, 9.0, rowTop(row), 0.0, 9.0,
+                        activeIdx == row);
         row++;
-        DrawMenuValue("  - Gravity", FormatFloat(g_DroneGravity), lineWidth, 9.0,
-                      60.0 + row * 36.0, 0.0, 9.0, activeIdx == row);
+        if (vis(row))
+          DrawMenuValue("  - Gravity", FormatFloat(g_DroneGravity), lineWidth,
+                        9.0, rowTop(row), 0.0, 9.0, activeIdx == row);
         row++;
-        DrawMenuValue("  - Banking", FormatFloat(g_DroneBanking), lineWidth, 9.0,
-                      60.0 + row * 36.0, 0.0, 9.0, activeIdx == row);
+        if (vis(row))
+          DrawMenuValue("  - Banking", FormatFloat(g_DroneBanking), lineWidth,
+                        9.0, rowTop(row), 0.0, 9.0, activeIdx == row);
         row++;
-        DrawMenuValue("  - Rot. Smoothing", FormatFloat(g_DroneRotSmoothing),
-                      lineWidth, 9.0, 60.0 + row * 36.0, 0.0, 9.0,
-                      activeIdx == row);
+        if (vis(row))
+          DrawMenuValue("  - Rot. Smoothing", FormatFloat(g_DroneRotSmoothing),
+                        lineWidth, 9.0, rowTop(row), 0.0, 9.0,
+                        activeIdx == row);
         row++;
-        DrawMenuValue("  - FOV Smoothing", FormatFloat(g_DroneFovSmoothing),
-                      lineWidth, 9.0, 60.0 + row * 36.0, 0.0, 9.0,
+        if (vis(row))
+          DrawMenuValue("  - FOV Smoothing", FormatFloat(g_DroneFovSmoothing),
+                        lineWidth, 9.0, rowTop(row), 0.0, 9.0,
                       activeIdx == row);
         row++;
       }
@@ -1861,36 +1947,6 @@ static void ProcessPoseListMenu();
 static void ProcessPoseEditMenu(int poseIdx);
 static void ProcessEventListMenu();
 static void ProcessEventEditMenu(int eventIdx);
-
-// ============================================================
-//  Viewport scrolling for long lists
-// ============================================================
-//
-// Pose Keyframes and Effect Events can grow unboundedly. Rendering one
-// row per item would push the menu off the bottom of the screen at ~20
-// keys. Instead we cap visible rows at kMaxVisibleListRows and slide a
-// scroll window over the logical list, keeping the selected row in view.
-//
-// The window auto-scrolls when the cursor would otherwise leave it.
-// "▲ N more" / "▼ N more" markers tell the user there's more above/below.
-
-static const int kMaxVisibleListRows = 12;
-
-// Adjusts `scrollOffset` so that `activeIdx` is visible within a
-// window of `kMaxVisibleListRows` rows over a list of `lineCount` total
-// rows. Idempotent — call before each frame's render pass.
-static void EnsureRowVisible(int activeIdx, int lineCount, int &scrollOffset) {
-  int maxOffset = lineCount - kMaxVisibleListRows;
-  if (maxOffset < 0) maxOffset = 0;
-  // Scroll up to bring the cursor into view from above
-  if (activeIdx < scrollOffset) scrollOffset = activeIdx;
-  // Scroll down to bring the cursor into view from below
-  if (activeIdx >= scrollOffset + kMaxVisibleListRows)
-    scrollOffset = activeIdx - kMaxVisibleListRows + 1;
-  // Clamp final offset
-  if (scrollOffset < 0) scrollOffset = 0;
-  if (scrollOffset > maxOffset) scrollOffset = maxOffset;
-}
 
 // Step size for left/right adjustment of an event's value, picked by
 // kind: integer-valued kinds (toggles + preset index + trigger) step
