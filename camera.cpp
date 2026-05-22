@@ -67,6 +67,22 @@ float g_DroneBanking = 15.0f;
 float g_DroneRotSmoothing = 8.0f;
 float g_DroneFovSmoothing = 5.0f;
 
+// Procedural Camera Shake
+bool g_ShakeEnabled = false;
+int g_ShakePreset = 0;              // Off
+float g_ShakeAmp = 0.0f;
+float g_ShakeFreq = 4.0f;
+float g_ShakeSpeedAmpCoupling = 1.0f;
+float g_ShakeSpeedFreqCoupling = 0.5f;
+float g_ShakeRotWeight = 1.0f;
+float g_ShakePosWeight = 1.0f;
+float g_ShakeSpeedRefMax = 30.0f;   // reference max speed (m/s) for normalization
+bool g_ShakeStopWhenStill = false;
+
+// Walk Mode
+bool g_WalkMode = false;
+float g_WalkHeight = 1.7f; // ~5'7" eye level
+
 // Depth of Field
 bool g_DoFEnabled = false;
 bool g_DoFAutofocus = false;
@@ -91,6 +107,10 @@ const char *g_WeatherNames[] = {
 const int g_WeatherCount = sizeof(g_WeatherNames) / sizeof(g_WeatherNames[0]);
 
 bool g_IsFiveM = false;
+
+// Mode dispatcher: -1 = unset (picker), 0 = Free Camera, 1 = Camera Sequence
+int g_CameraMode = -1;
+bool g_SequencePlaybackActive = false;
 
 // ---- Misc ----
 bool g_HideHUD = false;
@@ -158,6 +178,19 @@ static float s_DroneYawRate = 0.0f;   // degrees/sec
 static float s_DronePitchRate = 0.0f; // degrees/sec
 static float s_DroneRollRate = 0.0f;  // degrees/sec
 static float s_DroneTargetRoll = 0.0f;
+
+// Procedural shake state
+static float s_ShakePhase = 0.0f;
+static bool s_HasPrevPos = false;
+static float s_PrevPosX = 0.0f, s_PrevPosY = 0.0f, s_PrevPosZ = 0.0f;
+static float s_ShakeSeeds[6] = {17.31f, 41.07f, 73.59f, 11.27f, 53.83f, 97.41f};
+// Per-axis frequency multipliers. Incommensurate ratios so axes drift
+// independently and the global pattern never re-syncs. Randomized in
+// RandomizeShakePattern() to make each free-cam session feel different.
+static float s_ShakeAxisFreqMul[6] = {1.000f, 1.073f, 0.927f, 1.131f,
+                                      0.893f, 1.211f};
+// Smoothed motion factor (0..1) used by Stop-When-Still
+static float s_ShakeMotionFactor = 1.0f;
 
 // ============================================================
 //  Quaternion Support for Acrobatic Mode
@@ -246,6 +279,147 @@ static Quat EulerToQuat(float pitchDeg, float yawDeg, float rollDeg) {
 static Quat s_AcroMatrix = {1.0f, 0.0f, 0.0f, 0.0f};
 
 // ============================================================
+//  Procedural Camera Shake
+// ============================================================
+
+// 3-octave summed-sine value noise, sampled at parameter t (already
+// scaled by frequency in caller). seed shifts the phase per axis so
+// different DOFs don't move in lockstep. Output range ~ [-1, +1].
+static float ShakeNoise1D(float t, float seed) {
+  float n = 0.0f;
+  n += sinf(t + seed) * 0.5714f;             // octave 0, weight 4/7
+  n += sinf(t * 2.03f + seed * 1.7f) * 0.2857f; // octave 1, weight 2/7
+  n += sinf(t * 4.11f + seed * 2.3f) * 0.1429f; // octave 2, weight 1/7
+  return n;
+}
+
+// Preset table: BaseAmp, BaseFreq, SpeedAmpCoupling, SpeedFreqCoupling
+struct ShakePresetData {
+  float amp;
+  float freq;
+  float spdAmp;
+  float spdFreq;
+};
+static const ShakePresetData kShakePresets[5] = {
+    {0.00f,  4.0f, 0.0f, 0.0f}, // 0 Off
+    {0.15f,  2.5f, 0.5f, 0.3f}, // 1 Subtle
+    {0.40f,  4.0f, 1.0f, 0.5f}, // 2 Handheld
+    {0.70f,  6.0f, 1.5f, 1.0f}, // 3 Vehicle
+    {1.50f, 10.0f, 0.0f, 0.0f}, // 4 Earthquake
+};
+
+void ApplyShakePreset(int preset) {
+  if (preset < 0 || preset > 4)
+    return;
+  const ShakePresetData &p = kShakePresets[preset];
+  g_ShakeAmp = p.amp;
+  g_ShakeFreq = p.freq;
+  g_ShakeSpeedAmpCoupling = p.spdAmp;
+  g_ShakeSpeedFreqCoupling = p.spdFreq;
+  g_ShakePreset = preset;
+}
+
+// Re-roll the noise seeds and per-axis frequency multipliers. Called
+// automatically when free-cam starts (so each session feels different)
+// and on demand from the Camera Effects menu's "Randomize Pattern" row.
+void RandomizeShakePattern() {
+  for (int i = 0; i < 6; ++i) {
+    // Phase seed: large range so axes never align by accident
+    s_ShakeSeeds[i] = (rand() / (float)RAND_MAX) * 1000.0f;
+    // Frequency multiplier in [0.80, 1.25]. Keeps every axis close to the
+    // user-chosen base frequency while ensuring no two axes share a rational
+    // ratio, so the composite pattern is effectively non-repeating.
+    s_ShakeAxisFreqMul[i] = 0.80f + (rand() / (float)RAND_MAX) * 0.45f;
+  }
+  // Reset phase so the new pattern starts from a clean t=0 rather than
+  // continuing wherever the previous pattern was sitting.
+  s_ShakePhase = 0.0f;
+}
+
+// Compute 6 shake offsets for this frame. Advances phase by dt * effective
+// frequency so shake speed is framerate-independent.
+static void ComputeShakeOffsets(float dt, float &dx, float &dy, float &dz,
+                                float &dPitch, float &dYaw, float &dRoll) {
+  dx = dy = dz = dPitch = dYaw = dRoll = 0.0f;
+
+  if (!g_ShakeEnabled || g_ShakeAmp <= 0.0001f)
+    return;
+
+  // Estimate current camera speed (m/s)
+  float speed = 0.0f;
+  if (g_DroneMode) {
+    speed = sqrtf(s_DroneVelX * s_DroneVelX + s_DroneVelY * s_DroneVelY +
+                  s_DroneVelZ * s_DroneVelZ);
+  } else if (s_HasPrevPos && dt > 0.0001f) {
+    float ddx = s_PosX - s_PrevPosX;
+    float ddy = s_PosY - s_PrevPosY;
+    float ddz = s_PosZ - s_PrevPosZ;
+    speed = sqrtf(ddx * ddx + ddy * ddy + ddz * ddz) / dt;
+  }
+
+  float speedNorm = speed / (g_ShakeSpeedRefMax > 0.0f ? g_ShakeSpeedRefMax : 30.0f);
+  if (speedNorm > 1.0f) speedNorm = 1.0f;
+  if (speedNorm < 0.0f) speedNorm = 0.0f;
+
+  float effectiveFreq = g_ShakeFreq *
+                        (1.0f + g_ShakeSpeedFreqCoupling * speedNorm);
+  float effectiveAmp = g_ShakeAmp *
+                       (1.0f + g_ShakeSpeedAmpCoupling * speedNorm);
+
+  // Motion gate: when "Stop When Still" is on, fade the shake out the
+  // moment translation drops below a small threshold. Rotation does NOT
+  // count as motion — looking around with a still body shouldn't shake.
+  // Hysteresis via exponential smoothing prevents popping.
+  if (g_ShakeStopWhenStill) {
+    const float MOTION_THRESHOLD = 0.05f; // m/s
+    float target = (speed > MOTION_THRESHOLD) ? 1.0f : 0.0f;
+    // Fast attack (~80 ms) when motion starts, slow release (~250 ms) when
+    // it stops, so the shake feels responsive but settles gracefully.
+    float rate = (target > s_ShakeMotionFactor) ? 12.0f : 4.0f;
+    float k = 1.0f - expf(-dt * rate);
+    s_ShakeMotionFactor += (target - s_ShakeMotionFactor) * k;
+  } else {
+    s_ShakeMotionFactor = 1.0f;
+  }
+
+  if (s_ShakeMotionFactor < 0.001f)
+    return; // Fully gated — skip the trig work entirely
+
+  // Advance phase. The 2*PI converts Hz into radians/sec for sin().
+  s_ShakePhase += dt * effectiveFreq * 2.0f * PI;
+  // Wrap to avoid float-precision loss over long sessions
+  const float TWO_PI = 2.0f * PI;
+  if (s_ShakePhase > 1000.0f * TWO_PI)
+    s_ShakePhase -= 1000.0f * TWO_PI;
+
+  // Sample each axis at its own phase rate. Per-axis frequency
+  // multipliers are incommensurate, so the 6 channels never re-sync —
+  // the macro pattern is effectively non-repeating.
+  float nx  = ShakeNoise1D(s_ShakePhase * s_ShakeAxisFreqMul[0], s_ShakeSeeds[0]);
+  float ny  = ShakeNoise1D(s_ShakePhase * s_ShakeAxisFreqMul[1], s_ShakeSeeds[1]);
+  float nz  = ShakeNoise1D(s_ShakePhase * s_ShakeAxisFreqMul[2], s_ShakeSeeds[2]);
+  float np  = ShakeNoise1D(s_ShakePhase * s_ShakeAxisFreqMul[3], s_ShakeSeeds[3]);
+  float nyw = ShakeNoise1D(s_ShakePhase * s_ShakeAxisFreqMul[4], s_ShakeSeeds[4]);
+  float nr  = ShakeNoise1D(s_ShakePhase * s_ShakeAxisFreqMul[5], s_ShakeSeeds[5]);
+
+  // Scale into world units. Position uses 5 cm per amp unit; rotation
+  // uses 1 degree per amp unit (asymmetric because rotation reads
+  // visually stronger than translation at the same magnitude).
+  const float POS_SCALE = 0.05f;
+  const float ROT_SCALE = 1.0f;
+
+  float posMag = effectiveAmp * POS_SCALE * g_ShakePosWeight * s_ShakeMotionFactor;
+  float rotMag = effectiveAmp * ROT_SCALE * g_ShakeRotWeight * s_ShakeMotionFactor;
+
+  dx = nx * posMag;
+  dy = ny * posMag;
+  dz = nz * posMag;
+  dPitch = np * rotMag;
+  dYaw = nyw * rotMag;
+  dRoll = nr * rotMag;
+}
+
+// ============================================================
 //  Init / Destroy
 // ============================================================
 
@@ -293,6 +467,12 @@ void InitFreeCamera() {
   // Auto-hide HUD and Player when entering freecam
   g_HideHUD = true;
   g_HidePlayer = true;
+
+  // Fresh shake pattern for this session so the same preset doesn't
+  // produce the exact same motion across multiple toggles.
+  RandomizeShakePattern();
+  s_HasPrevPos = false;
+  s_ShakeMotionFactor = g_ShakeStopWhenStill ? 0.0f : 1.0f;
 
   g_FreeCamActive = true;
 }
@@ -1042,6 +1222,25 @@ void UpdateFreeCamera() {
       s_PosZ = newZ;
     }
 
+    // ---- Walk Mode: snap to ground at a fixed eye height ----
+    // Raycast straight down from well above the current XY to find ground,
+    // then place the camera at groundZ + g_WalkHeight. Done after all
+    // movement/collision so it overrides drone gravity and lock-altitude
+    // produces a true ground-follow behaviour rather than a flat plane.
+    if (g_WalkMode) {
+      float groundZ = 0.0f;
+      // Start probe well above the current camera position so the ray clears
+      // any roof / overhang the camera might have flown into. 200m is enough
+      // for tall GTA structures.
+      if (GAMEPLAY::GET_GROUND_Z_FOR_3D_COORD(s_PosX, s_PosY,
+                                              s_PosZ + 200.0f, &groundZ,
+                                              FALSE)) {
+        s_PosZ = groundZ + g_WalkHeight;
+        // Kill drone Z velocity so gravity can't fight the snap next frame.
+        s_DroneVelZ = 0.0f;
+      }
+    }
+
     if (g_MovePlayerWithCamera && ENTITY::DOES_ENTITY_EXIST(s_FrozenPed)) {
       ENTITY::SET_ENTITY_COORDS_NO_OFFSET(s_FrozenPed, s_PosX, s_PosY, s_PosZ,
                                           FALSE, FALSE, FALSE);
@@ -1064,6 +1263,20 @@ void UpdateFreeCamera() {
                    s_LocalOffset.y, s_LocalOffset.z, TRUE);
     }
   }
+
+  // ---- Procedural shake ----
+  // Computed once per frame from the (pre-shake) position, then added at
+  // every SET_CAM_COORD / SET_CAM_ROT site below so IGCS offsets and shake
+  // compose cleanly.
+  float shakeDx, shakeDy, shakeDz, shakePitchD, shakeYawD, shakeRollD;
+  ComputeShakeOffsets(dt, shakeDx, shakeDy, shakeDz, shakePitchD, shakeYawD,
+                      shakeRollD);
+
+  // Snapshot non-shaken position for next-frame speed estimation
+  s_PrevPosX = s_PosX;
+  s_PrevPosY = s_PosY;
+  s_PrevPosZ = s_PosZ;
+  s_HasPrevPos = true;
 
   // ---- Apply to camera ----
 
@@ -1092,10 +1305,11 @@ void UpdateFreeCamera() {
 
     if (s_RotationAnchor != 0) {
       // Teleport the invisible anchor to the calculated camera flight
-      // coordinates (plus IGCS offset if any)
+      // coordinates (plus IGCS offset if any, plus shake)
       ENTITY::SET_ENTITY_COORDS_NO_OFFSET(
-          s_RotationAnchor, s_PosX + s_IgcsOffsetX, s_PosY + s_IgcsOffsetY,
-          s_PosZ + s_IgcsOffsetZ, FALSE, FALSE, FALSE);
+          s_RotationAnchor, s_PosX + s_IgcsOffsetX + shakeDx,
+          s_PosY + s_IgcsOffsetY + shakeDy,
+          s_PosZ + s_IgcsOffsetZ + shakeDz, FALSE, FALSE, FALSE);
 
       // Natively apply the raw Quaternion Matrix to the Anchor (bypassing
       // SET_CAM_ROT's Euler limits natively)
@@ -1103,17 +1317,19 @@ void UpdateFreeCamera() {
                    s_AcroMatrix.y, s_AcroMatrix.z, s_AcroMatrix.w);
 
       // Strip any residual Euler drift from the camera itself so it identically
-      // inherits the Anchor's exact rotation
-      CAM::SET_CAM_ROT(s_Cam, 0.0f + s_IgcsPitchOffset, 0.0f + s_IgcsRollOffset,
-                       0.0f + s_IgcsYawOffset, 2);
+      // inherits the Anchor's exact rotation (plus shake)
+      CAM::SET_CAM_ROT(s_Cam, 0.0f + s_IgcsPitchOffset + shakePitchD,
+                       0.0f + s_IgcsRollOffset + shakeRollD,
+                       0.0f + s_IgcsYawOffset + shakeYawD, 2);
     } else {
       // Model is still streaming in, temporarily fallback to Basic Eulerian
       // rendering to prevent rendering/movement freezing
-      CAM::SET_CAM_COORD(s_Cam, s_PosX + s_IgcsOffsetX, s_PosY + s_IgcsOffsetY,
-                         s_PosZ + s_IgcsOffsetZ);
-      CAM::SET_CAM_ROT(s_Cam, s_Pitch + s_IgcsPitchOffset,
-                       g_CamRoll + s_IgcsRollOffset, s_Yaw + s_IgcsYawOffset,
-                       2);
+      CAM::SET_CAM_COORD(s_Cam, s_PosX + s_IgcsOffsetX + shakeDx,
+                         s_PosY + s_IgcsOffsetY + shakeDy,
+                         s_PosZ + s_IgcsOffsetZ + shakeDz);
+      CAM::SET_CAM_ROT(s_Cam, s_Pitch + s_IgcsPitchOffset + shakePitchD,
+                       g_CamRoll + s_IgcsRollOffset + shakeRollD,
+                       s_Yaw + s_IgcsYawOffset + shakeYawD, 2);
     }
   } else {
     // Standard Eulerian Flight (or Rigid Mode)
@@ -1135,15 +1351,18 @@ void UpdateFreeCamera() {
     if (IGCS_IsSessionActive()) {
       if (s_IsAttached) {
         // Translate the camera's intended world position into a temporary local offset for the entity
-        Vector3 tempLocalOffset = invoke<Vector3>(0x2274BC1C4885E333, targetHandle, s_PosX + s_IgcsOffsetX,
-                                        s_PosY + s_IgcsOffsetY, s_PosZ + s_IgcsOffsetZ);
+        Vector3 tempLocalOffset = invoke<Vector3>(0x2274BC1C4885E333, targetHandle,
+                                        s_PosX + s_IgcsOffsetX + shakeDx,
+                                        s_PosY + s_IgcsOffsetY + shakeDy,
+                                        s_PosZ + s_IgcsOffsetZ + shakeDz);
         // Force the engine to hold the camera natively on the vehicle at this specific DoF pixel offset
         invoke<Void>(0xFEDB7D269E8C60E3, s_Cam, targetHandle, tempLocalOffset.x,
                      tempLocalOffset.y, tempLocalOffset.z, TRUE);
         s_IgcsTemporarilyOffset = true;
       } else {
-        CAM::SET_CAM_COORD(s_Cam, s_PosX + s_IgcsOffsetX, s_PosY + s_IgcsOffsetY,
-                           s_PosZ + s_IgcsOffsetZ);
+        CAM::SET_CAM_COORD(s_Cam, s_PosX + s_IgcsOffsetX + shakeDx,
+                           s_PosY + s_IgcsOffsetY + shakeDy,
+                           s_PosZ + s_IgcsOffsetZ + shakeDz);
       }
     } else {
       if (s_IsAttached && s_IgcsTemporarilyOffset) {
@@ -1152,14 +1371,16 @@ void UpdateFreeCamera() {
                      s_LocalOffset.y, s_LocalOffset.z, TRUE); // ATTACH_CAM_TO_ENTITY
         s_IgcsTemporarilyOffset = false;
       } else if (!s_IsAttached) {
-        CAM::SET_CAM_COORD(s_Cam, s_PosX, s_PosY, s_PosZ);
+        CAM::SET_CAM_COORD(s_Cam, s_PosX + shakeDx, s_PosY + shakeDy,
+                           s_PosZ + shakeDz);
       }
     }
 
     // Apply Standard Native Euler tracking (Allows Gimbal clipping limits
     // natively)
-    CAM::SET_CAM_ROT(s_Cam, s_Pitch + s_IgcsPitchOffset,
-                     g_CamRoll + s_IgcsRollOffset, s_Yaw + s_IgcsYawOffset, 2);
+    CAM::SET_CAM_ROT(s_Cam, s_Pitch + s_IgcsPitchOffset + shakePitchD,
+                     g_CamRoll + s_IgcsRollOffset + shakeRollD,
+                     s_Yaw + s_IgcsYawOffset + shakeYawD, 2);
   }
 
   // Set FOV (real-time) via hash because SDK version is mismatched
@@ -1413,4 +1634,51 @@ void GetCameraState(float &posX, float &posY, float &posZ, float &pitch,
   pitch = s_Pitch;
   yaw = s_Yaw;
   roll = g_CamRoll;
+}
+
+// ============================================================
+//  Sequence-mode helpers
+// ============================================================
+
+void SetCameraStateFromSequence(float posX, float posY, float posZ,
+                                float pitch, float yaw, float roll,
+                                float fov) {
+  s_PosX = posX;
+  s_PosY = posY;
+  s_PosZ = posZ;
+  s_Pitch = pitch;
+  s_Yaw = yaw;
+  g_CamRoll = roll;
+  g_CamFOV = fov;
+}
+
+void SequencePushToEngine(float dt) {
+  // Sequence mode shares the Free Camera scripted-cam handle (s_Cam),
+  // initialized by InitFreeCamera() during Sequence_EnterMode. If for
+  // some reason the cam isn't up, bail.
+  if (s_Cam == 0)
+    return;
+
+  // Procedural shake during playback: ComputeShakeOffsets is normally
+  // called by UpdateFreeCamera, which doesn't run while Sequence is
+  // playing. Call it directly here so any SHAKE_* effect events that
+  // toggled g_ShakeEnabled actually produce visible jitter on top of
+  // the playback pose. Also keep s_PrevPos in sync so speed-coupled
+  // shake works (speed = position derivative due to playback motion).
+  float shakeDx = 0, shakeDy = 0, shakeDz = 0;
+  float shakePitchD = 0, shakeYawD = 0, shakeRollD = 0;
+  if (dt > 0.0f) {
+    ComputeShakeOffsets(dt, shakeDx, shakeDy, shakeDz, shakePitchD,
+                        shakeYawD, shakeRollD);
+    s_PrevPosX = s_PosX;
+    s_PrevPosY = s_PosY;
+    s_PrevPosZ = s_PosZ;
+    s_HasPrevPos = true;
+  }
+
+  CAM::SET_CAM_COORD(s_Cam, s_PosX + shakeDx, s_PosY + shakeDy,
+                     s_PosZ + shakeDz);
+  CAM::SET_CAM_ROT(s_Cam, s_Pitch + shakePitchD,
+                   g_CamRoll + shakeRollD, s_Yaw + shakeYawD, 2);
+  invoke<Void>(0xB13C14F66A00D047, s_Cam, g_CamFOV); // SET_CAM_FOV (real-time)
 }

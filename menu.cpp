@@ -10,6 +10,7 @@
 #include "menu.h"
 #include "camera.h"
 #include "keyboard.h"
+#include "sequence.h"
 
 #include <cstdio>
 #include <string>
@@ -64,6 +65,11 @@ void LoadSettings() {
     strcpy_s(last + 1, MAX_PATH - (last + 1 - path), "SimpleCamera.ini");
 
   g_MenuKey = GetPrivateProfileIntA("Controls", "MenuKey", VK_F5, path);
+  // Camera Sequence hotkeys — inert outside Sequence mode.
+  g_SeqHotkeyAdd = GetPrivateProfileIntA("Controls", "SequenceAddKey", VK_F6, path);
+  g_SeqHotkeyPlay = GetPrivateProfileIntA("Controls", "SequencePlayKey", VK_F7, path);
+  g_SeqHotkeyStop = GetPrivateProfileIntA("Controls", "SequenceStopKey", VK_F8, path);
+  g_SeqHotkeyNext = GetPrivateProfileIntA("Controls", "SequenceNextKey", VK_F9, path);
 }
 
 // ============================================================
@@ -297,8 +303,11 @@ static void ProcessMovementMenu() {
   DWORD waitTime = 150;
   while (true) {
     // Dynamic line count
-    int lineCount = 9; // Speed, Sensitivity, Zoom Speed, Roll Speed, Collision, Lock Height, Acro Mode,
-                       // Follow Target, Drone Mode
+    int lineCount = 10; // Speed, Sensitivity, Zoom Speed, Roll Speed, Collision,
+                        // Lock Height, Walk Mode, Acro Mode,
+                        // Follow Target, Drone Mode
+    if (g_WalkMode)
+      lineCount += 1; // "Walk Height" only visible while Walk Mode is on
     if (g_FollowMode == 1) {
       lineCount += 1; // "Rigid Mode"
     } else if (g_FollowMode == 2) {
@@ -347,6 +356,15 @@ static void ProcessMovementMenu() {
       DrawMenuValue("Lock Altitude", FormatBool(g_LockHeight), lineWidth, 9.0,
                     60.0 + row * 36.0, 0.0, 9.0, activeIdx == row);
       row++;
+      DrawMenuValue("Walk Mode", FormatBool(g_WalkMode), lineWidth, 9.0,
+                    60.0 + row * 36.0, 0.0, 9.0, activeIdx == row);
+      row++;
+      if (g_WalkMode) {
+        DrawMenuValue("  - Walk Height (m)", FormatFloat(g_WalkHeight, 2),
+                      lineWidth, 9.0, 60.0 + row * 36.0, 0.0, 9.0,
+                      activeIdx == row);
+        row++;
+      }
 
       std::string rotEngineStr = g_RotationEngine ? "Acrobatic" : "Standard";
       DrawMenuValue("Rotation Style", rotEngineStr, lineWidth, 9.0,
@@ -482,24 +500,28 @@ static void ProcessMovementMenu() {
 
     int collisionIdx = 4;
     int lockHeightIdx = 5;
-    int rotationIdx = 6;
-    int followIdx = 7;
- 
+    int walkModeIdx = 6;
+    // Walk Height row is hidden when Walk Mode is off — everything below
+    // shifts up by one in that case.
+    int walkHeightIdx = g_WalkMode ? 7 : -1;
+    int rotationIdx = g_WalkMode ? 8 : 7;
+    int followIdx = g_WalkMode ? 9 : 8;
+
     int lockIdx = -1;
     int markerIdx = -1;
     int rigidIdx = -1;
-    int droneToggleIdx = 8;
- 
+    int droneToggleIdx = followIdx + 1;
+
     if (g_FollowMode == 1) {
-      rigidIdx = 8;
-      droneToggleIdx = 9;
+      rigidIdx = droneToggleIdx;
+      droneToggleIdx++;
     } else if (g_FollowMode == 2) {
-      lockIdx = 8;
-      droneToggleIdx = 9;
+      lockIdx = droneToggleIdx;
+      droneToggleIdx++;
       if (g_FollowTargetEntity != 0) {
-        markerIdx = 9;
-        rigidIdx = 10;
-        droneToggleIdx = 11;
+        markerIdx = droneToggleIdx;
+        rigidIdx = droneToggleIdx + 1;
+        droneToggleIdx += 2;
       }
     }
 
@@ -517,6 +539,22 @@ static void ProcessMovementMenu() {
         g_LockHeight = !g_LockHeight;
         SetStatusText(g_LockHeight ? "Altitude locked (Z-axis frozen)"
                                    : "Altitude unlocked");
+        waitTime = 200;
+      } else if (activeIdx == walkModeIdx) {
+        MenuBeep();
+        g_WalkMode = !g_WalkMode;
+        SetStatusText(g_WalkMode
+                          ? "Walk mode enabled — camera locked to ground"
+                          : "Walk mode disabled");
+        waitTime = 200;
+      } else if (activeIdx == walkHeightIdx) {
+        MenuBeep();
+        float newVal;
+        if (PromptForFloat(newVal, g_WalkHeight)) {
+          g_WalkHeight = newVal;
+          if (g_WalkHeight < 0.1f) g_WalkHeight = 0.1f;
+          if (g_WalkHeight > 50.0f) g_WalkHeight = 50.0f;
+        }
         waitTime = 200;
       } else if (activeIdx == rotationIdx) {
         MenuBeep();
@@ -608,6 +646,10 @@ static void ProcessMovementMenu() {
         g_RollSpeed += 0.1f;
         if (g_RollSpeed > 10.0f)
           g_RollSpeed = 10.0f;
+      } else if (activeIdx == walkHeightIdx) {
+        g_WalkHeight += 0.1f;
+        if (g_WalkHeight > 50.0f)
+          g_WalkHeight = 50.0f;
       } else if (activeIdx == followIdx) {
         g_FollowMode = (g_FollowMode + 1) % 3;
         if (g_FollowMode == 1 && g_MovePlayerWithCamera) {
@@ -674,6 +716,10 @@ static void ProcessMovementMenu() {
         g_RollSpeed -= 0.1f;
         if (g_RollSpeed < 0.1f)
           g_RollSpeed = 0.1f;
+      } else if (activeIdx == walkHeightIdx) {
+        g_WalkHeight -= 0.1f;
+        if (g_WalkHeight < 0.1f)
+          g_WalkHeight = 0.1f;
       } else if (activeIdx == followIdx) {
         g_FollowMode = (g_FollowMode == 0) ? 2 : g_FollowMode - 1;
         if (g_FollowMode == 1 && g_MovePlayerWithCamera) {
@@ -1388,17 +1434,243 @@ static void ProcessMiscMenu() {
 }
 
 // ============================================================
-//  Main Configuration Menu
+//  Sub-Menu: Camera Effects (Procedural Shake)
 // ============================================================
 
-void ProcessConfigMenu() {
+static const char *kShakePresetNames[6] = {
+    "Off", "Subtle", "Handheld", "Vehicle", "Earthquake", "Custom"};
+
+static void MarkShakeCustom() { g_ShakePreset = 5; }
+
+static void ClampShake() {
+  if (g_ShakeAmp < 0.0f) g_ShakeAmp = 0.0f;
+  if (g_ShakeAmp > 3.0f) g_ShakeAmp = 3.0f;
+  if (g_ShakeFreq < 0.05f) g_ShakeFreq = 0.05f;
+  if (g_ShakeFreq > 20.0f) g_ShakeFreq = 20.0f;
+  if (g_ShakeSpeedAmpCoupling < 0.0f) g_ShakeSpeedAmpCoupling = 0.0f;
+  if (g_ShakeSpeedAmpCoupling > 2.0f) g_ShakeSpeedAmpCoupling = 2.0f;
+  if (g_ShakeSpeedFreqCoupling < 0.0f) g_ShakeSpeedFreqCoupling = 0.0f;
+  if (g_ShakeSpeedFreqCoupling > 2.0f) g_ShakeSpeedFreqCoupling = 2.0f;
+  if (g_ShakeRotWeight < 0.0f) g_ShakeRotWeight = 0.0f;
+  if (g_ShakeRotWeight > 2.0f) g_ShakeRotWeight = 2.0f;
+  if (g_ShakePosWeight < 0.0f) g_ShakePosWeight = 0.0f;
+  if (g_ShakePosWeight > 2.0f) g_ShakePosWeight = 2.0f;
+}
+
+static void ProcessCameraEffectsMenu() {
   const float lineWidth = 300.0f;
-  const int lineCount = 6;
+  const int lineCount = 10;
+  int activeIdx = 0;
+
+  DWORD waitTime = 150;
+  while (true) {
+    DWORD maxTick = GetTickCount() + waitTime;
+    do {
+      CONTROLS::DISABLE_CONTROL_ACTION(0, 27, TRUE);
+      CONTROLS::DISABLE_CONTROL_ACTION(0, 172, TRUE);
+      CONTROLS::DISABLE_CONTROL_ACTION(0, 173, TRUE);
+      CONTROLS::DISABLE_CONTROL_ACTION(0, 174, TRUE);
+      CONTROLS::DISABLE_CONTROL_ACTION(0, 175, TRUE);
+      CONTROLS::DISABLE_CONTROL_ACTION(0, 19, TRUE);
+      CONTROLS::DISABLE_CONTROL_ACTION(0, 166, TRUE);
+      CONTROLS::DISABLE_CONTROL_ACTION(0, 167, TRUE);
+      CONTROLS::DISABLE_CONTROL_ACTION(0, 168, TRUE);
+      CONTROLS::DISABLE_CONTROL_ACTION(0, 169, TRUE);
+
+      DrawMenuLine("CAMERA EFFECTS", "", lineWidth, 15.0, 18.0, 0.0, 5.0, false,
+                   true);
+
+      int presetIdx = (g_ShakePreset >= 0 && g_ShakePreset <= 5)
+                          ? g_ShakePreset
+                          : 5;
+      DrawMenuValue("Enabled", FormatBool(g_ShakeEnabled), lineWidth, 9.0,
+                    60.0 + 0 * 36.0, 0.0, 9.0, activeIdx == 0);
+      DrawMenuValue("Preset", kShakePresetNames[presetIdx], lineWidth, 9.0,
+                    60.0 + 1 * 36.0, 0.0, 9.0, activeIdx == 1);
+      DrawMenuValue("Base Amplitude", FormatFloat(g_ShakeAmp, 2), lineWidth, 9.0,
+                    60.0 + 2 * 36.0, 0.0, 9.0, activeIdx == 2);
+      DrawMenuValue("Base Frequency (Hz)", FormatFloat(g_ShakeFreq, 2),
+                    lineWidth, 9.0, 60.0 + 3 * 36.0, 0.0, 9.0, activeIdx == 3);
+      DrawMenuValue("Speed -> Amplitude",
+                    FormatFloat(g_ShakeSpeedAmpCoupling, 2), lineWidth, 9.0,
+                    60.0 + 4 * 36.0, 0.0, 9.0, activeIdx == 4);
+      DrawMenuValue("Speed -> Frequency",
+                    FormatFloat(g_ShakeSpeedFreqCoupling, 2), lineWidth, 9.0,
+                    60.0 + 5 * 36.0, 0.0, 9.0, activeIdx == 5);
+      DrawMenuValue("Rotation Weight", FormatFloat(g_ShakeRotWeight, 2),
+                    lineWidth, 9.0, 60.0 + 6 * 36.0, 0.0, 9.0, activeIdx == 6);
+      DrawMenuValue("Position Weight", FormatFloat(g_ShakePosWeight, 2),
+                    lineWidth, 9.0, 60.0 + 7 * 36.0, 0.0, 9.0, activeIdx == 7);
+      DrawMenuValue("Stop When Still", FormatBool(g_ShakeStopWhenStill),
+                    lineWidth, 9.0, 60.0 + 8 * 36.0, 0.0, 9.0, activeIdx == 8);
+      DrawMenuValue("Randomize Pattern", "Press Enter", lineWidth, 9.0,
+                    60.0 + 9 * 36.0, 0.0, 9.0, activeIdx == 9);
+
+      if (g_FreeCamActive)
+        UpdateFreeCamera();
+
+      UpdateStatusText();
+      UpdateGlobalEffects();
+      WAIT(0);
+    } while (GetTickCount() < maxTick);
+    waitTime = 0;
+
+    bool bSelect, bBack, bUp, bDown, bLeft, bRight;
+    GetMenuButtons(&bSelect, &bBack, &bUp, &bDown, &bLeft, &bRight);
+
+    if (bBack) {
+      MenuBeep();
+      break;
+    }
+    if (bUp) {
+      MenuBeep();
+      activeIdx = (activeIdx == 0) ? lineCount - 1 : activeIdx - 1;
+      waitTime = 150;
+    }
+    if (bDown) {
+      MenuBeep();
+      activeIdx = (activeIdx + 1) % lineCount;
+      waitTime = 150;
+    }
+
+    if (bSelect) {
+      MenuBeep();
+      if (activeIdx == 0) {
+        g_ShakeEnabled = !g_ShakeEnabled;
+        SetStatusText(g_ShakeEnabled ? "Camera shake enabled"
+                                     : "Camera shake disabled");
+        waitTime = 200;
+      } else if (activeIdx == 1) {
+        // Enter cycles preset forward through the 5 real presets
+        int next = (g_ShakePreset + 1) % 5;
+        ApplyShakePreset(next);
+        SetStatusText(std::string("Preset: ") + kShakePresetNames[next]);
+        waitTime = 200;
+      } else {
+        // Numeric rows: open on-screen keyboard for precise entry
+        float newVal = 0.0f;
+        bool ok = false;
+        if (activeIdx == 2) {
+          if (PromptForFloat(newVal, g_ShakeAmp)) { g_ShakeAmp = newVal; ok = true; }
+        } else if (activeIdx == 3) {
+          if (PromptForFloat(newVal, g_ShakeFreq)) { g_ShakeFreq = newVal; ok = true; }
+        } else if (activeIdx == 4) {
+          if (PromptForFloat(newVal, g_ShakeSpeedAmpCoupling)) { g_ShakeSpeedAmpCoupling = newVal; ok = true; }
+        } else if (activeIdx == 5) {
+          if (PromptForFloat(newVal, g_ShakeSpeedFreqCoupling)) { g_ShakeSpeedFreqCoupling = newVal; ok = true; }
+        } else if (activeIdx == 6) {
+          if (PromptForFloat(newVal, g_ShakeRotWeight)) { g_ShakeRotWeight = newVal; ok = true; }
+        } else if (activeIdx == 7) {
+          if (PromptForFloat(newVal, g_ShakePosWeight)) { g_ShakePosWeight = newVal; ok = true; }
+        } else if (activeIdx == 8) {
+          g_ShakeStopWhenStill = !g_ShakeStopWhenStill;
+          SetStatusText(g_ShakeStopWhenStill
+                            ? "Shake stops when camera is still"
+                            : "Shake always active");
+        } else if (activeIdx == 9) {
+          RandomizeShakePattern();
+          SetStatusText("Shake pattern randomized");
+        }
+        if (ok) {
+          ClampShake();
+          MarkShakeCustom();
+        }
+        waitTime = 200;
+      }
+    }
+
+    if (bRight) {
+      MenuBeep();
+      if (activeIdx == 1) {
+        int next = (g_ShakePreset + 1) % 5;
+        ApplyShakePreset(next);
+      } else if (activeIdx == 2) {
+        g_ShakeAmp += 0.05f;
+        ClampShake();
+        MarkShakeCustom();
+      } else if (activeIdx == 3) {
+        // Variable step: fine control at low Hz, coarser when already high
+        float step = (g_ShakeFreq < 0.5f) ? 0.05f
+                   : (g_ShakeFreq < 2.0f) ? 0.1f
+                                          : 0.5f;
+        g_ShakeFreq += step;
+        ClampShake();
+        MarkShakeCustom();
+      } else if (activeIdx == 4) {
+        g_ShakeSpeedAmpCoupling += 0.1f;
+        ClampShake();
+        MarkShakeCustom();
+      } else if (activeIdx == 5) {
+        g_ShakeSpeedFreqCoupling += 0.1f;
+        ClampShake();
+        MarkShakeCustom();
+      } else if (activeIdx == 6) {
+        g_ShakeRotWeight += 0.1f;
+        ClampShake();
+        MarkShakeCustom();
+      } else if (activeIdx == 7) {
+        g_ShakePosWeight += 0.1f;
+        ClampShake();
+        MarkShakeCustom();
+      }
+      waitTime = 100;
+    }
+    if (bLeft) {
+      MenuBeep();
+      if (activeIdx == 1) {
+        int prev = (g_ShakePreset <= 0) ? 4 : g_ShakePreset - 1;
+        if (prev > 4) prev = 4;
+        ApplyShakePreset(prev);
+      } else if (activeIdx == 2) {
+        g_ShakeAmp -= 0.05f;
+        ClampShake();
+        MarkShakeCustom();
+      } else if (activeIdx == 3) {
+        // Mirror the right-arrow's adaptive step so increments and
+        // decrements feel symmetrical at any current value.
+        float step = (g_ShakeFreq <= 0.5f) ? 0.05f
+                   : (g_ShakeFreq <= 2.0f) ? 0.1f
+                                           : 0.5f;
+        g_ShakeFreq -= step;
+        ClampShake();
+        MarkShakeCustom();
+      } else if (activeIdx == 4) {
+        g_ShakeSpeedAmpCoupling -= 0.1f;
+        ClampShake();
+        MarkShakeCustom();
+      } else if (activeIdx == 5) {
+        g_ShakeSpeedFreqCoupling -= 0.1f;
+        ClampShake();
+        MarkShakeCustom();
+      } else if (activeIdx == 6) {
+        g_ShakeRotWeight -= 0.1f;
+        ClampShake();
+        MarkShakeCustom();
+      } else if (activeIdx == 7) {
+        g_ShakePosWeight -= 0.1f;
+        ClampShake();
+        MarkShakeCustom();
+      }
+      waitTime = 100;
+    }
+  }
+}
+
+// ============================================================
+//  Free Camera Mode — main menu
+//  Returns true if user chose "Exit" (caller re-opens picker);
+//  false on normal close (bBack / F5 toggle).
+// ============================================================
+
+static bool ProcessFreeCameraMenu() {
+  const float lineWidth = 300.0f;
+  const int lineCount = 8;
   int activeIdx = 0;
 
   static const char *lineCaption[lineCount] = {
-      "TOGGLE FREECAM", "MOVEMENT",       "LENS SETTINGS",
-      "DEPTH OF FIELD", "TIME & WEATHER", "MISC SETTINGS"};
+      "Toggle freecam", "Movement",       "Lens settings",
+      "Depth of field", "Camera effects", "Time & weather",
+      "Misc settings",  "Exit"};
 
   DWORD waitTime = 150;
   while (true) {
@@ -1425,7 +1697,7 @@ void ProcessConfigMenu() {
         std::string cap = lineCaption[i];
         // Show ON/OFF state for the toggle item using NativeUI formatting
         if (i == 0) {
-          DrawMenuValue("TOGGLE FREECAM", FormatBool(g_FreeCamActive),
+          DrawMenuValue("Toggle freecam", FormatBool(g_FreeCamActive),
                         lineWidth, i != activeIdx ? 9.0 : 11.0,
                         (i != activeIdx ? 60.0 : 56.0) + i * 36.0, 0.0,
                         i != activeIdx ? 9.0 : 7.0, i == activeIdx);
@@ -1478,16 +1750,22 @@ void ProcessConfigMenu() {
         ProcessDoFMenu();
         break;
       case 4:
-        ProcessTimeWeatherMenu();
+        ProcessCameraEffectsMenu();
         break;
       case 5:
+        ProcessTimeWeatherMenu();
+        break;
+      case 6:
         ProcessMiscMenu();
         break;
+      case 7:
+        // Exit → caller pops back to picker
+        return true;
       }
       waitTime = 200;
     } else if (bBack || IsMenuTogglePressed()) {
       MenuBeep();
-      break;
+      return false;
     } else if (bUp) {
       MenuBeep();
       if (activeIdx == 0)
@@ -1500,6 +1778,808 @@ void ProcessConfigMenu() {
       if (activeIdx == lineCount)
         activeIdx = 0;
       waitTime = 150;
+    }
+  }
+}
+
+// ============================================================
+//  Mode Picker — first F5 in a session, or whenever the user
+//  explicitly switches modes via Exit.
+//  Returns 0 = Free Camera, 1 = Camera Sequence, -1 = cancelled.
+// ============================================================
+
+static int ProcessModePickerMenu() {
+  const float lineWidth = 300.0f;
+  const int lineCount = 2;
+  int activeIdx = 0;
+  if (g_CameraMode >= 0 && g_CameraMode <= 1) activeIdx = g_CameraMode;
+
+  DWORD waitTime = 150;
+  while (true) {
+    DWORD maxTick = GetTickCount() + waitTime;
+    do {
+      CONTROLS::DISABLE_CONTROL_ACTION(0, 27, TRUE);
+      CONTROLS::DISABLE_CONTROL_ACTION(0, 172, TRUE);
+      CONTROLS::DISABLE_CONTROL_ACTION(0, 173, TRUE);
+      CONTROLS::DISABLE_CONTROL_ACTION(0, 174, TRUE);
+      CONTROLS::DISABLE_CONTROL_ACTION(0, 175, TRUE);
+      CONTROLS::DISABLE_CONTROL_ACTION(0, 19, TRUE);
+      CONTROLS::DISABLE_CONTROL_ACTION(0, 166, TRUE);
+      CONTROLS::DISABLE_CONTROL_ACTION(0, 167, TRUE);
+      CONTROLS::DISABLE_CONTROL_ACTION(0, 168, TRUE);
+      CONTROLS::DISABLE_CONTROL_ACTION(0, 169, TRUE);
+
+      DrawMenuLine("SIMPLE CAMERA", "", lineWidth, 15.0, 18.0, 0.0, 5.0, false,
+                   true);
+      DrawMenuValue("Free Camera", "Manual flight", lineWidth, 9.0,
+                    60.0 + 0 * 36.0, 0.0, 9.0, activeIdx == 0);
+      DrawMenuValue("Camera Sequence", "Keyframed animation", lineWidth, 9.0,
+                    60.0 + 1 * 36.0, 0.0, 9.0, activeIdx == 1);
+
+      if (g_FreeCamActive && g_CameraMode != 1)
+        UpdateFreeCamera();
+      UpdateTimeWeather();
+      UpdateStatusText();
+      UpdateGlobalEffects();
+      WAIT(0);
+    } while (GetTickCount() < maxTick);
+    waitTime = 0;
+
+    bool bSelect, bBack, bUp, bDown;
+    GetMenuButtons(&bSelect, &bBack, &bUp, &bDown, NULL, NULL);
+
+    if (bSelect) {
+      MenuBeep();
+      return activeIdx;
+    }
+    if (bBack || IsMenuTogglePressed()) {
+      MenuBeep();
+      return -1;
+    }
+    if (bUp) {
+      MenuBeep();
+      activeIdx = (activeIdx == 0) ? lineCount - 1 : activeIdx - 1;
+      waitTime = 150;
+    }
+    if (bDown) {
+      MenuBeep();
+      activeIdx = (activeIdx + 1) % lineCount;
+      waitTime = 150;
+    }
+  }
+}
+
+// ============================================================
+//  Camera Sequence Mode — main menu + list submenus + per-item editors
+//  Returns true if user chose "Exit", false on normal close.
+// ============================================================
+
+// Forward decl — full implementation appended below.
+static bool ProcessSequenceMenu();
+static void DisableMenuPhoneControls();
+static void ProcessPoseListMenu();
+static void ProcessPoseEditMenu(int poseIdx);
+static void ProcessEventListMenu();
+static void ProcessEventEditMenu(int eventIdx);
+
+// ============================================================
+//  Viewport scrolling for long lists
+// ============================================================
+//
+// Pose Keyframes and Effect Events can grow unboundedly. Rendering one
+// row per item would push the menu off the bottom of the screen at ~20
+// keys. Instead we cap visible rows at kMaxVisibleListRows and slide a
+// scroll window over the logical list, keeping the selected row in view.
+//
+// The window auto-scrolls when the cursor would otherwise leave it.
+// "▲ N more" / "▼ N more" markers tell the user there's more above/below.
+
+static const int kMaxVisibleListRows = 12;
+
+// Adjusts `scrollOffset` so that `activeIdx` is visible within a
+// window of `kMaxVisibleListRows` rows over a list of `lineCount` total
+// rows. Idempotent — call before each frame's render pass.
+static void EnsureRowVisible(int activeIdx, int lineCount, int &scrollOffset) {
+  int maxOffset = lineCount - kMaxVisibleListRows;
+  if (maxOffset < 0) maxOffset = 0;
+  // Scroll up to bring the cursor into view from above
+  if (activeIdx < scrollOffset) scrollOffset = activeIdx;
+  // Scroll down to bring the cursor into view from below
+  if (activeIdx >= scrollOffset + kMaxVisibleListRows)
+    scrollOffset = activeIdx - kMaxVisibleListRows + 1;
+  // Clamp final offset
+  if (scrollOffset < 0) scrollOffset = 0;
+  if (scrollOffset > maxOffset) scrollOffset = maxOffset;
+}
+
+// Step size for left/right adjustment of an event's value, picked by
+// kind: integer-valued kinds (toggles + preset index + trigger) step
+// by 1, continuous floats by 0.1.
+static float EventValueStep(EffectKind k) {
+  switch (k) {
+  case EFX_SHAKE_ENABLED:
+  case EFX_SHAKE_PRESET:
+  case EFX_SHAKE_STOP_STILL:
+  case EFX_SHAKE_RANDOMIZE:
+    return 1.0f;
+  default:
+    return 0.1f;
+  }
+}
+
+// Shared helper — every submenu suppresses the same controls
+static void DisableMenuPhoneControls() {
+  CONTROLS::DISABLE_CONTROL_ACTION(0, 27, TRUE);
+  CONTROLS::DISABLE_CONTROL_ACTION(0, 172, TRUE);
+  CONTROLS::DISABLE_CONTROL_ACTION(0, 173, TRUE);
+  CONTROLS::DISABLE_CONTROL_ACTION(0, 174, TRUE);
+  CONTROLS::DISABLE_CONTROL_ACTION(0, 175, TRUE);
+  CONTROLS::DISABLE_CONTROL_ACTION(0, 19, TRUE);
+  CONTROLS::DISABLE_CONTROL_ACTION(0, 166, TRUE);
+  CONTROLS::DISABLE_CONTROL_ACTION(0, 167, TRUE);
+  CONTROLS::DISABLE_CONTROL_ACTION(0, 168, TRUE);
+  CONTROLS::DISABLE_CONTROL_ACTION(0, 169, TRUE);
+}
+
+// ============================================================
+//  Top-level dispatch (called by script.cpp on F5)
+// ============================================================
+
+void ProcessConfigMenu() {
+  while (true) {
+    // First-time-ever F5: show picker. After that, F5 reopens the
+    // remembered mode menu directly. Switching modes pops back here.
+    if (g_CameraMode == -1) {
+      int chosen = ProcessModePickerMenu();
+      if (chosen == -1) return;          // user cancelled
+      // Auto-stop whichever mode might have been running (safety).
+      if (g_FreeCamActive && chosen != 0) DestroyFreeCamera();
+      if (Sequence_IsInMode() && chosen != 1) Sequence_ExitMode();
+      g_CameraMode = chosen;
+      if (g_CameraMode == 1) Sequence_EnterMode();
+    }
+
+    bool wantSwitch = false;
+    if (g_CameraMode == 0) {
+      wantSwitch = ProcessFreeCameraMenu();
+    } else if (g_CameraMode == 1) {
+      wantSwitch = ProcessSequenceMenu();
+    }
+
+    if (!wantSwitch) return;             // normal close (bBack / F5 toggle)
+
+    // User picked Exit → tear down current mode, return to picker.
+    if (g_CameraMode == 0 && g_FreeCamActive) DestroyFreeCamera();
+    if (g_CameraMode == 1) Sequence_ExitMode();
+    g_CameraMode = -1;
+  }
+}
+
+// ============================================================
+//  Camera Sequence — main menu
+// ============================================================
+
+static std::string FormatTimeSec(float t) {
+  char buf[16];
+  sprintf_s(buf, "%.2fs", t);
+  return std::string(buf);
+}
+
+static bool ProcessSequenceMenu() {
+  const float lineWidth = 320.0f;
+  const int lineCount = 15;
+  int activeIdx = 0;
+
+  DWORD waitTime = 150;
+  while (true) {
+    int seqIdx = Sequence_ActiveIndex();
+    int seqCount = Sequence_Count();
+
+    DWORD maxTick = GetTickCount() + waitTime;
+    do {
+      DisableMenuPhoneControls();
+
+      CameraSequence *s = Sequence_Active();
+      std::string seqLabel = s ? s->name : "(none)";
+      char seqIdxBuf[32]; sprintf_s(seqIdxBuf, " [%d/%d]", seqIdx + 1, seqCount);
+      seqLabel += seqIdxBuf;
+
+      DrawMenuLine("CAMERA SEQUENCE", "", lineWidth, 15.0, 18.0, 0.0, 5.0,
+                   false, true);
+
+      DrawMenuValue("Sequence", seqLabel, lineWidth, 9.0,
+                    60.0 + 0 * 36.0, 0.0, 9.0, activeIdx == 0);
+      DrawMenuValue("Play / Pause",
+                    Sequence_IsPlaying() ? "Playing" : "Paused", lineWidth,
+                    9.0, 60.0 + 1 * 36.0, 0.0, 9.0, activeIdx == 1);
+      DrawMenuValue("Stop", "Press Enter", lineWidth, 9.0, 60.0 + 2 * 36.0, 0.0,
+                    9.0, activeIdx == 2);
+      // Loop value shows closed-status when on, so the user can tell
+      // whether the wrap is seamless or jumpy without checking the gap.
+      std::string loopStr;
+      if (!s || !s->loop) {
+        loopStr = "Off";
+      } else if (Sequence_IsLoopClosed()) {
+        loopStr = "On (closed)";
+      } else {
+        loopStr = "On (open)";
+      }
+      DrawMenuValue("Loop", loopStr, lineWidth, 9.0,
+                    60.0 + 3 * 36.0, 0.0, 9.0, activeIdx == 3);
+      DrawMenuValue("Speed", FormatFloat(s ? s->playbackSpeed : 1.0f, 2),
+                    lineWidth, 9.0, 60.0 + 4 * 36.0, 0.0, 9.0, activeIdx == 4);
+
+      char timeStr[48];
+      sprintf_s(timeStr, "%.2fs / %.2fs", Sequence_CurrentTime(),
+                Sequence_TotalDuration());
+      DrawMenuValue("Time", timeStr, lineWidth, 9.0, 60.0 + 5 * 36.0, 0.0, 9.0,
+                    activeIdx == 5);
+
+      char countBuf[32];
+      sprintf_s(countBuf, "%d", s ? (int)s->poses.size() : 0);
+      DrawMenuValue("Pose Keyframes...", countBuf, lineWidth, 9.0,
+                    60.0 + 6 * 36.0, 0.0, 9.0, activeIdx == 6);
+      sprintf_s(countBuf, "%d", s ? (int)s->events.size() : 0);
+      DrawMenuValue("Effect Events...", countBuf, lineWidth, 9.0,
+                    60.0 + 7 * 36.0, 0.0, 9.0, activeIdx == 7);
+
+      DrawMenuValue("Capture Current Pose", "F6", lineWidth, 9.0,
+                    60.0 + 8 * 36.0, 0.0, 9.0, activeIdx == 8);
+      DrawMenuValue("New Sequence", "Press Enter", lineWidth, 9.0,
+                    60.0 + 9 * 36.0, 0.0, 9.0, activeIdx == 9);
+      DrawMenuValue("Delete Active Sequence", "Press Enter", lineWidth, 9.0,
+                    60.0 + 10 * 36.0, 0.0, 9.0, activeIdx == 10);
+      DrawMenuValue("Save All to INI", "Press Enter", lineWidth, 9.0,
+                    60.0 + 11 * 36.0, 0.0, 9.0, activeIdx == 11);
+      // Close Loop — shows gap diagnostics when there's something to
+      // close, so the user can see how far off the seam is before acting.
+      // Uses ASCII only ("d=" / "deg") because the GTA Chalet Comprime
+      // font lacks glyphs for Δ and ° at small sizes — they render as
+      // missing-glyph boxes.
+      std::string closeStr = "Press Enter";
+      LoopGap gap;
+      if (Sequence_GetLoopGap(&gap)) {
+        char buf[64];
+        sprintf_s(buf, "d=%.2fm / %.1f deg", gap.posDist,
+                  gap.pitchDelta + gap.yawDelta + gap.rollDelta);
+        closeStr = buf;
+      }
+      DrawMenuValue("Close Loop", closeStr, lineWidth, 9.0,
+                    60.0 + 12 * 36.0, 0.0, 9.0, activeIdx == 12);
+      DrawMenuValue("Show Markers", FormatBool(g_SequenceShowMarkers),
+                    lineWidth, 9.0, 60.0 + 13 * 36.0, 0.0, 9.0,
+                    activeIdx == 13);
+      DrawMenuValue("Exit", "Mode picker", lineWidth, 9.0,
+                    60.0 + 14 * 36.0, 0.0, 9.0, activeIdx == 14);
+
+      // Drive the sequence mode every frame while this menu is open.
+      // script.cpp's main loop is blocked at ProcessConfigMenu(), so it
+      // can't tick anything — we have to do it ourselves here, just like
+      // every Free Camera submenu calls UpdateFreeCamera() in its draw
+      // loop. This is what lets the user free-fly the camera while the
+      // sequence menu is open AND lets playback animate live.
+      if (Sequence_IsInMode()) Sequence_FrameTick();
+      UpdateStatusText();
+      UpdateGlobalEffects();
+      WAIT(0);
+    } while (GetTickCount() < maxTick);
+    waitTime = 0;
+
+    bool bSelect, bBack, bUp, bDown, bLeft, bRight;
+    GetMenuButtons(&bSelect, &bBack, &bUp, &bDown, &bLeft, &bRight);
+
+    if (bBack || IsMenuTogglePressed()) {
+      MenuBeep();
+      return false;
+    }
+    if (bUp)   { MenuBeep(); activeIdx = (activeIdx == 0) ? lineCount - 1 : activeIdx - 1; waitTime = 150; }
+    if (bDown) { MenuBeep(); activeIdx = (activeIdx + 1) % lineCount; waitTime = 150; }
+
+    CameraSequence *s = Sequence_Active();
+
+    if (bSelect) {
+      MenuBeep();
+      switch (activeIdx) {
+      case 0: // Sequence cycle: Enter creates new
+        Sequence_New("Untitled");
+        SetStatusText("New sequence created");
+        break;
+      case 1: Sequence_TogglePlay();
+        SetStatusText(Sequence_IsPlaying() ? "Playing" : "Paused"); break;
+      case 2: Sequence_Stop(); SetStatusText("Stopped"); break;
+      case 3: if (s) { s->loop = !s->loop;
+                       SetStatusText(s->loop ? "Loop on" : "Loop off"); } break;
+      case 4: {
+        if (s) {
+          float v;
+          if (PromptForFloat(v, s->playbackSpeed)) {
+            if (v < 0.05f) v = 0.05f;
+            if (v > 8.0f) v = 8.0f;
+            s->playbackSpeed = v;
+          }
+        }
+        break;
+      }
+      case 5: {
+        float v;
+        if (PromptForFloat(v, Sequence_CurrentTime())) {
+          Sequence_SetCurrentTime(v);
+        }
+        break;
+      }
+      case 6: ProcessPoseListMenu(); break;
+      case 7: ProcessEventListMenu(); break;
+      case 8: {
+        int idx = Sequence_CapturePoseAtCurrentTime();
+        if (idx >= 0) SetStatusText("Pose captured");
+        break;
+      }
+      case 9: Sequence_New("Untitled"); SetStatusText("New sequence"); break;
+      case 10: Sequence_DeleteActive(); SetStatusText("Sequence deleted"); break;
+      case 11: Sequence_SaveAll(); SetStatusText("Saved to INI"); break;
+      case 12: {
+        int idx = Sequence_CloseLoop();
+        if (idx >= 0) {
+          SetStatusText(Sequence_IsLoopClosed() ? "Loop closed"
+                                                : "Closing keyframe added");
+        }
+        break;
+      }
+      case 13:
+        g_SequenceShowMarkers = !g_SequenceShowMarkers;
+        SetStatusText(g_SequenceShowMarkers ? "Markers visible"
+                                            : "Markers hidden");
+        break;
+      case 14: return true; // Exit → return to mode picker
+      }
+      waitTime = 200;
+    }
+
+    if (bRight) {
+      MenuBeep();
+      if (activeIdx == 0) { // cycle sequences
+        if (seqIdx < seqCount - 1) Sequence_SetActive(seqIdx + 1);
+      } else if (activeIdx == 3 && s) {
+        s->loop = !s->loop;
+      } else if (activeIdx == 4 && s) {
+        s->playbackSpeed += 0.1f;
+        if (s->playbackSpeed > 8.0f) s->playbackSpeed = 8.0f;
+      } else if (activeIdx == 5) {
+        Sequence_SetCurrentTime(Sequence_CurrentTime() + 0.1f);
+      }
+      waitTime = 100;
+    }
+    if (bLeft) {
+      MenuBeep();
+      if (activeIdx == 0) {
+        if (seqIdx > 0) Sequence_SetActive(seqIdx - 1);
+      } else if (activeIdx == 3 && s) {
+        s->loop = !s->loop;
+      } else if (activeIdx == 4 && s) {
+        s->playbackSpeed -= 0.1f;
+        if (s->playbackSpeed < 0.05f) s->playbackSpeed = 0.05f;
+      } else if (activeIdx == 5) {
+        Sequence_SetCurrentTime(Sequence_CurrentTime() - 0.1f);
+      }
+      waitTime = 100;
+    }
+  }
+}
+
+// ============================================================
+//  Pose Keyframes — list submenu
+// ============================================================
+
+static void ProcessPoseListMenu() {
+  const float lineWidth = 360.0f;
+  int activeIdx = 0;
+  // Scroll offset survives the inner render/input loop iterations so the
+  // viewport doesn't jump when the cursor wraps around the list.
+  int scrollOffset = 0;
+
+  DWORD waitTime = 150;
+  while (true) {
+    CameraSequence *s = Sequence_Active();
+    int poseCount = s ? (int)s->poses.size() : 0;
+    int lineCount = poseCount + 1; // + "Add at current pose"
+    if (activeIdx >= lineCount) activeIdx = lineCount - 1;
+    if (activeIdx < 0) activeIdx = 0;
+    EnsureRowVisible(activeIdx, lineCount, scrollOffset);
+
+    int visEnd = scrollOffset + kMaxVisibleListRows;
+    if (visEnd > lineCount) visEnd = lineCount;
+
+    DWORD maxTick = GetTickCount() + waitTime;
+    do {
+      DisableMenuPhoneControls();
+      // Title bar shows logical range / total so the user always knows
+      // where they are even when only a slice is rendered.
+      char title[64];
+      if (lineCount > kMaxVisibleListRows) {
+        sprintf_s(title, "POSE KEYFRAMES  [%d-%d / %d]", scrollOffset + 1,
+                  visEnd, lineCount);
+      } else {
+        sprintf_s(title, "POSE KEYFRAMES");
+      }
+      DrawMenuLine(title, "", lineWidth, 15.0, 18.0, 0.0, 5.0, false, true);
+
+      // Render only the visible slice. visRow is the on-screen row index
+      // (0..kMaxVisibleListRows-1); i is the logical list index.
+      // Range info (X-Y / total) is in the title bar — that's enough to
+      // know how many items are hidden in each direction, so we don't
+      // draw separate "more above/below" indicator rows (they crowded
+      // the first/last list rows and Unicode arrows rendered as boxes
+      // in the GTA Chalet Comprime font).
+      for (int i = scrollOffset; i < visEnd; ++i) {
+        int visRow = i - scrollOffset;
+        float top = 60.0f + visRow * 36.0f;
+        if (i < poseCount) {
+          const PoseKeyframe &p = s->poses[i];
+          char label[64], val[96];
+          sprintf_s(label, "KF %d", i);
+          sprintf_s(val, "t=%.2fs  fov=%.0f  %s/%s", p.t, p.fov,
+                    EaseName(p.ease), PathName(p.path));
+          DrawMenuValue(label, val, lineWidth, 9.0, top, 0.0, 9.0,
+                        activeIdx == i);
+        } else {
+          // The trailing "+ Add" sentinel — same row, different content.
+          DrawMenuValue("+ Add at current camera pose", "F6", lineWidth, 9.0,
+                        top, 0.0, 9.0, activeIdx == i);
+        }
+      }
+
+      if (Sequence_IsInMode()) Sequence_FrameTick();
+      UpdateStatusText();
+      UpdateGlobalEffects();
+      WAIT(0);
+    } while (GetTickCount() < maxTick);
+    waitTime = 0;
+
+    bool bSelect, bBack, bUp, bDown, bLeft, bRight;
+    GetMenuButtons(&bSelect, &bBack, &bUp, &bDown, &bLeft, &bRight);
+
+    if (bBack) { MenuBeep(); return; }
+    if (bUp)   { MenuBeep(); activeIdx = (activeIdx == 0) ? lineCount - 1 : activeIdx - 1; waitTime = 150; }
+    if (bDown) { MenuBeep(); activeIdx = (activeIdx + 1) % lineCount; waitTime = 150; }
+
+    if (bSelect) {
+      MenuBeep();
+      if (activeIdx == poseCount) {
+        int newIdx = Sequence_CapturePoseAtCurrentTime();
+        if (newIdx >= 0) SetStatusText("Pose captured");
+      } else {
+        ProcessPoseEditMenu(activeIdx);
+      }
+      waitTime = 200;
+    }
+  }
+}
+
+// ============================================================
+//  Pose Keyframe — per-item editor
+// ============================================================
+
+static void ProcessPoseEditMenu(int poseIdx) {
+  const float lineWidth = 320.0f;
+  const int lineCount = 12;
+  int activeIdx = 0;
+  // Mark this pose as being edited so DrawSequenceMarkers paints its
+  // in-world sphere distinctly. The RAII guard clears the marker on
+  // every return path (bBack, delete, validity bail-outs) so we don't
+  // leak the highlight after the editor closes.
+  Sequence_SetEditingPose(poseIdx);
+  struct ClearEditGuard { ~ClearEditGuard() { Sequence_SetEditingPose(-1); } } _g;
+
+  DWORD waitTime = 150;
+  while (true) {
+    CameraSequence *s = Sequence_Active();
+    if (!s || poseIdx < 0 || poseIdx >= (int)s->poses.size()) return;
+    PoseKeyframe &p = s->poses[poseIdx];
+
+    DWORD maxTick = GetTickCount() + waitTime;
+    do {
+      DisableMenuPhoneControls();
+      char title[32]; sprintf_s(title, "KEYFRAME %d", poseIdx);
+      DrawMenuLine(title, "", lineWidth, 15.0, 18.0, 0.0, 5.0, false, true);
+
+      DrawMenuValue("Time (s)", FormatFloat(p.t, 2), lineWidth, 9.0,
+                    60.0 + 0 * 36.0, 0.0, 9.0, activeIdx == 0);
+      DrawMenuValue("Pos X", FormatFloat(p.posX, 2), lineWidth, 9.0,
+                    60.0 + 1 * 36.0, 0.0, 9.0, activeIdx == 1);
+      DrawMenuValue("Pos Y", FormatFloat(p.posY, 2), lineWidth, 9.0,
+                    60.0 + 2 * 36.0, 0.0, 9.0, activeIdx == 2);
+      DrawMenuValue("Pos Z", FormatFloat(p.posZ, 2), lineWidth, 9.0,
+                    60.0 + 3 * 36.0, 0.0, 9.0, activeIdx == 3);
+      DrawMenuValue("Pitch", FormatFloat(p.pitch, 2), lineWidth, 9.0,
+                    60.0 + 4 * 36.0, 0.0, 9.0, activeIdx == 4);
+      DrawMenuValue("Yaw", FormatFloat(p.yaw, 2), lineWidth, 9.0,
+                    60.0 + 5 * 36.0, 0.0, 9.0, activeIdx == 5);
+      DrawMenuValue("Roll", FormatFloat(p.roll, 2), lineWidth, 9.0,
+                    60.0 + 6 * 36.0, 0.0, 9.0, activeIdx == 6);
+      DrawMenuValue("FOV", FormatFloat(p.fov, 1), lineWidth, 9.0,
+                    60.0 + 7 * 36.0, 0.0, 9.0, activeIdx == 7);
+      DrawMenuValue("Ease", EaseName(p.ease), lineWidth, 9.0,
+                    60.0 + 8 * 36.0, 0.0, 9.0, activeIdx == 8);
+      DrawMenuValue("Path", PathName(p.path), lineWidth, 9.0,
+                    60.0 + 9 * 36.0, 0.0, 9.0, activeIdx == 9);
+      DrawMenuValue("Recapture from live", "Press Enter", lineWidth, 9.0,
+                    60.0 + 10 * 36.0, 0.0, 9.0, activeIdx == 10);
+      DrawMenuValue("Delete", "Press Enter", lineWidth, 9.0,
+                    60.0 + 11 * 36.0, 0.0, 9.0, activeIdx == 11);
+
+      if (Sequence_IsInMode()) Sequence_FrameTick();
+      UpdateStatusText();
+      UpdateGlobalEffects();
+      WAIT(0);
+    } while (GetTickCount() < maxTick);
+    waitTime = 0;
+
+    bool bSelect, bBack, bUp, bDown, bLeft, bRight;
+    GetMenuButtons(&bSelect, &bBack, &bUp, &bDown, &bLeft, &bRight);
+
+    if (bBack) { MenuBeep(); Sequence_SortByTime(); return; }
+    if (bUp)   { MenuBeep(); activeIdx = (activeIdx == 0) ? lineCount - 1 : activeIdx - 1; waitTime = 150; }
+    if (bDown) { MenuBeep(); activeIdx = (activeIdx + 1) % lineCount; waitTime = 150; }
+
+    // Re-fetch pointer in case insert/delete shifted memory
+    s = Sequence_Active();
+    if (!s || poseIdx >= (int)s->poses.size()) return;
+    PoseKeyframe &pose = s->poses[poseIdx];
+
+    auto promptFloat = [&](float &target) {
+      float v;
+      if (PromptForFloat(v, target)) target = v;
+    };
+
+    if (bSelect) {
+      MenuBeep();
+      switch (activeIdx) {
+      case 0: promptFloat(pose.t); break;
+      case 1: promptFloat(pose.posX); break;
+      case 2: promptFloat(pose.posY); break;
+      case 3: promptFloat(pose.posZ); break;
+      case 4: promptFloat(pose.pitch); break;
+      case 5: promptFloat(pose.yaw); break;
+      case 6: promptFloat(pose.roll); break;
+      case 7: promptFloat(pose.fov); break;
+      case 8: pose.ease = (EaseType)(((int)pose.ease + 1) % 5); break;
+      case 9: pose.path = (PathType)(((int)pose.path + 1) % 2); break;
+      case 10: {
+        float px, py, pz, pitch, yaw, roll;
+        GetCameraState(px, py, pz, pitch, yaw, roll);
+        pose.posX = px; pose.posY = py; pose.posZ = pz;
+        pose.pitch = pitch; pose.yaw = yaw; pose.roll = roll;
+        pose.fov = g_CamFOV;
+        SetStatusText("Pose recaptured from live camera");
+        break;
+      }
+      case 11:
+        Sequence_DeletePose(poseIdx);
+        SetStatusText("Keyframe deleted");
+        return; // index is now stale; pop back to list
+      }
+      waitTime = 200;
+    }
+
+    // Left/right: nudge numeric values; cycle enums
+    if (bRight) {
+      MenuBeep();
+      switch (activeIdx) {
+      case 0: pose.t += 0.1f; if (pose.t < 0.0f) pose.t = 0.0f; break;
+      case 1: pose.posX += 0.5f; break;
+      case 2: pose.posY += 0.5f; break;
+      case 3: pose.posZ += 0.5f; break;
+      case 4: pose.pitch += 1.0f; break;
+      case 5: pose.yaw += 1.0f; break;
+      case 6: pose.roll += 1.0f; break;
+      case 7: pose.fov += 1.0f; if (pose.fov > 130.0f) pose.fov = 130.0f; break;
+      case 8: pose.ease = (EaseType)(((int)pose.ease + 1) % 5); break;
+      case 9: pose.path = (PathType)(((int)pose.path + 1) % 2); break;
+      }
+      waitTime = 100;
+    }
+    if (bLeft) {
+      MenuBeep();
+      switch (activeIdx) {
+      case 0: pose.t -= 0.1f; if (pose.t < 0.0f) pose.t = 0.0f; break;
+      case 1: pose.posX -= 0.5f; break;
+      case 2: pose.posY -= 0.5f; break;
+      case 3: pose.posZ -= 0.5f; break;
+      case 4: pose.pitch -= 1.0f; break;
+      case 5: pose.yaw -= 1.0f; break;
+      case 6: pose.roll -= 1.0f; break;
+      case 7: pose.fov -= 1.0f; if (pose.fov < 5.0f) pose.fov = 5.0f; break;
+      case 8: pose.ease = (EaseType)(((int)pose.ease + 4) % 5); break;
+      case 9: pose.path = (PathType)(((int)pose.path + 1) % 2); break;
+      }
+      waitTime = 100;
+    }
+  }
+}
+
+// ============================================================
+//  Effect Events — list submenu
+// ============================================================
+
+static void ProcessEventListMenu() {
+  const float lineWidth = 360.0f;
+  int activeIdx = 0;
+  // See ProcessPoseListMenu — viewport pattern.
+  int scrollOffset = 0;
+
+  DWORD waitTime = 150;
+  while (true) {
+    CameraSequence *s = Sequence_Active();
+    int evCount = s ? (int)s->events.size() : 0;
+    int lineCount = evCount + 1; // + "Add event"
+    if (activeIdx >= lineCount) activeIdx = lineCount - 1;
+    if (activeIdx < 0) activeIdx = 0;
+    EnsureRowVisible(activeIdx, lineCount, scrollOffset);
+
+    int visEnd = scrollOffset + kMaxVisibleListRows;
+    if (visEnd > lineCount) visEnd = lineCount;
+
+    DWORD maxTick = GetTickCount() + waitTime;
+    do {
+      DisableMenuPhoneControls();
+      char title[64];
+      if (lineCount > kMaxVisibleListRows) {
+        sprintf_s(title, "EFFECT EVENTS  [%d-%d / %d]", scrollOffset + 1,
+                  visEnd, lineCount);
+      } else {
+        sprintf_s(title, "EFFECT EVENTS");
+      }
+      DrawMenuLine(title, "", lineWidth, 15.0, 18.0, 0.0, 5.0, false, true);
+
+      // Same approach as ProcessPoseListMenu — title bar carries the
+      // X-Y / total range info; no separate "more above/below" rows.
+      for (int i = scrollOffset; i < visEnd; ++i) {
+        int visRow = i - scrollOffset;
+        float top = 60.0f + visRow * 36.0f;
+        if (i < evCount) {
+          const EffectEvent &e = s->events[i];
+          char label[64], val[96];
+          sprintf_s(label, "EV %d", i);
+          sprintf_s(val, "t=%.2fs  %s=%.2f  %s", e.t, EffectName(e.kind),
+                    e.value, e.ramp ? "ramp" : "snap");
+          DrawMenuValue(label, val, lineWidth, 9.0, top, 0.0, 9.0,
+                        activeIdx == i);
+        } else {
+          DrawMenuValue("+ Add event at current time", "Press Enter",
+                        lineWidth, 9.0, top, 0.0, 9.0, activeIdx == i);
+        }
+      }
+
+      if (Sequence_IsInMode()) Sequence_FrameTick();
+      UpdateStatusText();
+      UpdateGlobalEffects();
+      WAIT(0);
+    } while (GetTickCount() < maxTick);
+    waitTime = 0;
+
+    bool bSelect, bBack, bUp, bDown, bLeft, bRight;
+    GetMenuButtons(&bSelect, &bBack, &bUp, &bDown, &bLeft, &bRight);
+
+    if (bBack) { MenuBeep(); return; }
+    if (bUp)   { MenuBeep(); activeIdx = (activeIdx == 0) ? lineCount - 1 : activeIdx - 1; waitTime = 150; }
+    if (bDown) { MenuBeep(); activeIdx = (activeIdx + 1) % lineCount; waitTime = 150; }
+
+    if (bSelect) {
+      MenuBeep();
+      if (activeIdx == evCount) {
+        // Add new event with current time, default kind = Shake On/Off = 1.
+        // Sequence_AddEvent sorts after insertion, so we have to look up
+        // the new event's index by its (time, kind, value) signature to
+        // open the editor on the right row.
+        float t = Sequence_CurrentTime();
+        Sequence_AddEvent(EFX_SHAKE_ENABLED, t, 1.0f, false);
+        CameraSequence *s2 = Sequence_Active();
+        int newIdx = -1;
+        if (s2) {
+          for (int i = 0; i < (int)s2->events.size(); ++i) {
+            const EffectEvent &ev = s2->events[i];
+            if (ev.kind == EFX_SHAKE_ENABLED && fabsf(ev.t - t) < 0.001f &&
+                ev.value == 1.0f && !ev.ramp) {
+              newIdx = i;
+              break;
+            }
+          }
+        }
+        if (newIdx >= 0) {
+          // Drop the user straight into the editor for the new event so
+          // they can pick the kind / value without hunting in the list.
+          ProcessEventEditMenu(newIdx);
+        } else {
+          SetStatusText("Event added");
+        }
+      } else {
+        ProcessEventEditMenu(activeIdx);
+      }
+      waitTime = 200;
+    }
+  }
+}
+
+// ============================================================
+//  Effect Event — per-item editor
+// ============================================================
+
+static void ProcessEventEditMenu(int eventIdx) {
+  const float lineWidth = 320.0f;
+  const int lineCount = 5;
+  int activeIdx = 0;
+
+  DWORD waitTime = 150;
+  while (true) {
+    CameraSequence *s = Sequence_Active();
+    if (!s || eventIdx < 0 || eventIdx >= (int)s->events.size()) return;
+    EffectEvent &e = s->events[eventIdx];
+
+    DWORD maxTick = GetTickCount() + waitTime;
+    do {
+      DisableMenuPhoneControls();
+      char title[32]; sprintf_s(title, "EVENT %d", eventIdx);
+      DrawMenuLine(title, "", lineWidth, 15.0, 18.0, 0.0, 5.0, false, true);
+
+      DrawMenuValue("Time (s)", FormatFloat(e.t, 2), lineWidth, 9.0,
+                    60.0 + 0 * 36.0, 0.0, 9.0, activeIdx == 0);
+      DrawMenuValue("Effect", EffectName(e.kind), lineWidth, 9.0,
+                    60.0 + 1 * 36.0, 0.0, 9.0, activeIdx == 1);
+      DrawMenuValue("Value", FormatFloat(e.value, 3), lineWidth, 9.0,
+                    60.0 + 2 * 36.0, 0.0, 9.0, activeIdx == 2);
+      DrawMenuValue("Mode", e.ramp ? "Ramp (lerp from prev)" : "Snap",
+                    lineWidth, 9.0, 60.0 + 3 * 36.0, 0.0, 9.0, activeIdx == 3);
+      DrawMenuValue("Delete", "Press Enter", lineWidth, 9.0, 60.0 + 4 * 36.0,
+                    0.0, 9.0, activeIdx == 4);
+
+      if (Sequence_IsInMode()) Sequence_FrameTick();
+      UpdateStatusText();
+      UpdateGlobalEffects();
+      WAIT(0);
+    } while (GetTickCount() < maxTick);
+    waitTime = 0;
+
+    bool bSelect, bBack, bUp, bDown, bLeft, bRight;
+    GetMenuButtons(&bSelect, &bBack, &bUp, &bDown, &bLeft, &bRight);
+
+    if (bBack) { MenuBeep(); Sequence_SortByTime(); return; }
+    if (bUp)   { MenuBeep(); activeIdx = (activeIdx == 0) ? lineCount - 1 : activeIdx - 1; waitTime = 150; }
+    if (bDown) { MenuBeep(); activeIdx = (activeIdx + 1) % lineCount; waitTime = 150; }
+
+    s = Sequence_Active();
+    if (!s || eventIdx >= (int)s->events.size()) return;
+    EffectEvent &ev = s->events[eventIdx];
+
+    if (bSelect) {
+      MenuBeep();
+      switch (activeIdx) {
+      case 0: { float v; if (PromptForFloat(v, ev.t)) { if (v < 0.0f) v = 0.0f; ev.t = v; } break; }
+      case 1: ev.kind = (EffectKind)(((int)ev.kind + 1) % EFX_COUNT); break;
+      case 2: { float v; if (PromptForFloat(v, ev.value)) ev.value = v; break; }
+      case 3: ev.ramp = !ev.ramp; break;
+      case 4: Sequence_DeleteEvent(eventIdx); SetStatusText("Event deleted"); return;
+      }
+      waitTime = 200;
+    }
+    if (bRight) {
+      MenuBeep();
+      switch (activeIdx) {
+      case 0: ev.t += 0.1f; break;
+      case 1: ev.kind = (EffectKind)(((int)ev.kind + 1) % EFX_COUNT); break;
+      case 2: ev.value += EventValueStep(ev.kind); break;
+      case 3: ev.ramp = !ev.ramp; break;
+      }
+      waitTime = 100;
+    }
+    if (bLeft) {
+      MenuBeep();
+      switch (activeIdx) {
+      case 0: ev.t -= 0.1f; if (ev.t < 0.0f) ev.t = 0.0f; break;
+      case 1: ev.kind = (EffectKind)(((int)ev.kind + EFX_COUNT - 1) % EFX_COUNT); break;
+      case 2: ev.value -= EventValueStep(ev.kind); break;
+      case 3: ev.ramp = !ev.ramp; break;
+      }
+      waitTime = 100;
     }
   }
 }

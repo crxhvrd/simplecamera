@@ -34,3 +34,6 @@ logs/
 
 # Backup
 backup/
+
+# README.txt is for the gta5mods.com release archive only, not GitHub
+README.txt

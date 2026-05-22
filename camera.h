@@ -42,6 +42,27 @@ extern float g_DroneBanking;      // auto-roll into turns (degrees)
 extern float g_DroneRotSmoothing; // rotational inertia (higher = snappier)
 extern float g_DroneFovSmoothing; // smoothing for FOV zoom in drone mode
 
+// ---- Procedural Camera Shake ----
+
+extern bool g_ShakeEnabled;
+extern int g_ShakePreset;            // 0=Off,1=Subtle,2=Handheld,3=Vehicle,4=Earthquake,5=Custom
+extern float g_ShakeAmp;             // base amplitude
+extern float g_ShakeFreq;            // base frequency (Hz)
+extern float g_ShakeSpeedAmpCoupling;  // 0..2
+extern float g_ShakeSpeedFreqCoupling; // 0..2
+extern float g_ShakeRotWeight;       // 0..2 — rotation contribution
+extern float g_ShakePosWeight;       // 0..2 — translation contribution
+extern float g_ShakeSpeedRefMax;     // reference max speed (m/s) for normalization
+extern bool g_ShakeStopWhenStill;    // fade shake out when camera not translating
+
+// ---- Walk Mode (terrain-following at fixed eye height) ----
+
+extern bool g_WalkMode;
+extern float g_WalkHeight; // meters above ground
+
+void ApplyShakePreset(int preset);
+void RandomizeShakePattern();
+
 // ---- Depth of Field Settings ----
 
 extern bool g_DoFEnabled;
@@ -75,6 +96,23 @@ extern bool g_ShowInfoOverlay;
 extern bool g_ShowLockedEntityMarker;
 
 extern bool g_IsFiveM;
+
+// ---- Mode dispatcher ----
+// 0 = Free Camera, 1 = Camera Sequence, -1 = no mode chosen yet (show picker)
+extern int g_CameraMode;
+extern bool g_SequencePlaybackActive;
+
+// Write the camera transform from sequence playback. Skips input processing,
+// collision, follow — these are handled by the sequence's own driver.
+void SetCameraStateFromSequence(float posX, float posY, float posZ,
+                                float pitch, float yaw, float roll, float fov);
+
+// Push the current s_Pos* / s_Pitch / s_Yaw / g_CamRoll / g_CamFOV state to
+// the scripted camera (CAM::SET_CAM_COORD / SET_CAM_ROT / FOV). Called by
+// the sequence tick after writing state. `dt` is the per-frame delta in
+// seconds — needed so procedural shake (when enabled via an effect event)
+// can advance its phase. Pass 0 to suppress shake offsets entirely.
+void SequencePushToEngine(float dt);
 
 // ---- Functions ----
 

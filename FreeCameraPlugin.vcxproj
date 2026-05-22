@@ -13,6 +13,7 @@
     <ClCompile Include="script.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="igcs_bridge.cpp" />
+    <ClCompile Include="sequence.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="external\scripthook_sdk\inc\main.h" />
@@ -25,6 +26,7 @@
     <ClInclude Include="menu.h" />
     <ClInclude Include="script.h" />
     <ClInclude Include="igcs_bridge.h" />
+    <ClInclude Include="sequence.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="fx_asi_build.rc" />

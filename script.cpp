@@ -11,6 +11,9 @@
 #include "igcs_bridge.h"
 #include "keyboard.h"
 #include "menu.h"
+#include "sequence.h"
+
+#include "external\scripthook_sdk\inc\natives.h"
 
 
 #pragma warning(disable : 4244 4305)
@@ -25,6 +28,8 @@ void main() {
 
   // Load INI settings
   LoadSettings();
+  // Load any persisted camera sequences
+  Sequence_LoadAll();
 
   // Reset defaults
   g_FreeCamActive = false;
@@ -50,8 +55,10 @@ void main() {
       ProcessConfigMenu();
     }
 
-    // Update camera every frame if active
-    if (g_FreeCamActive) {
+    // Mode dispatch — Free Camera and Camera Sequence are mutually exclusive
+    if (g_CameraMode == 1 && Sequence_IsInMode()) {
+      Sequence_FrameTick();
+    } else if (g_FreeCamActive) {
       UpdateFreeCamera();
     }
 
@@ -64,12 +71,22 @@ void main() {
     // Global effects (freeze world, info overlay)
     UpdateGlobalEffects();
 
-    // Update IGCS shared buffer with current camera state
-    IGCS_TryConnect();
-    if (IGCS_IsConnected()) {
-      float px, py, pz, pitch, yaw, roll;
-      GetCameraState(px, py, pz, pitch, yaw, roll);
-      IGCS_UpdateData(px, py, pz, pitch, yaw, roll, g_CamFOV, g_FreeCamActive);
+    // IGCS belongs to Free Camera only — its ReShade screenshot workflow
+    // makes no sense when sequence playback owns the camera. In Sequence
+    // mode, advertise cameraEnabled=false so any active IGCS session on
+    // the ReShade side releases its lock cleanly.
+    if (g_CameraMode != 1) {
+      IGCS_TryConnect();
+      if (IGCS_IsConnected()) {
+        float px, py, pz, pitch, yaw, roll;
+        GetCameraState(px, py, pz, pitch, yaw, roll);
+        IGCS_UpdateData(px, py, pz, pitch, yaw, roll, g_CamFOV,
+                        g_FreeCamActive);
+      }
+    } else if (IGCS_IsConnected()) {
+      // Single zero-state push when in Sequence mode so ReShade sees the
+      // camera tools as inactive
+      IGCS_UpdateData(0, 0, 0, 0, 0, 0, g_CamFOV, false);
     }
 
     WAIT(0);
