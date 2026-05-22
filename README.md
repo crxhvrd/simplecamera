@@ -5,6 +5,8 @@
 
 A professional camera and world-control suite for Grand Theft Auto V. Built for filmmakers, photographers, and trailer editors who need precise, repeatable shots — not a casual flycam.
 
+**Links** — [Source code on GitHub](https://github.com/crxhvrd/simplecamera) · [Join our Discord](https://discord.com/invite/jK4SRmBqYt)
+
 **Headline features:**
 
 - **Free Camera mode** — a 6-DOF flycam that can switch into a fully physics-based drone with tunable drag, acceleration, gravity, and auto-banking.
