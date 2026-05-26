@@ -1640,6 +1640,17 @@ void GetCameraState(float &posX, float &posY, float &posZ, float &pitch,
 //  Sequence-mode helpers
 // ============================================================
 
+// State that lets SequencePushToEngine decide between native attach and
+// script-driven SET_CAM_COORD. Set by SetCameraStateFromSequenceLocked
+// (active) and cleared by SetCameraStateFromSequence (inactive). Kept
+// module-private so the sequence module only touches these via the
+// two API entry points.
+static bool s_SequenceAttachActive = false;
+static int s_SequenceAttachEntity = 0;
+static float s_SequenceAttachOffX = 0.0f;
+static float s_SequenceAttachOffY = 0.0f;
+static float s_SequenceAttachOffZ = 0.0f;
+
 void SetCameraStateFromSequence(float posX, float posY, float posZ,
                                 float pitch, float yaw, float roll,
                                 float fov) {
@@ -1650,6 +1661,35 @@ void SetCameraStateFromSequence(float posX, float posY, float posZ,
   s_Yaw = yaw;
   g_CamRoll = roll;
   g_CamFOV = fov;
+  // Mark attachment as inactive so SequencePushToEngine routes through
+  // the world-coord (detach + SET_CAM_COORD) path. Any leftover handle
+  // from a prior locked-segment frame stops being honored.
+  s_SequenceAttachActive = false;
+  s_SequenceAttachEntity = 0;
+}
+
+void SetCameraStateFromSequenceLocked(int entity, float localOffsetX,
+                                      float localOffsetY, float localOffsetZ,
+                                      float pitch, float yaw, float roll,
+                                      float fov) {
+  // Resolve a world coord too — used as fallback if SequencePushToEngine
+  // ends up in the unattached path (e.g. entity died between this call
+  // and the push), and so things like shake speed-tracking still have
+  // a fresh value to derive velocity from.
+  Vector3 w = invoke<Vector3>(0x1899F328B0E12848, entity, localOffsetX,
+                              localOffsetY, localOffsetZ);
+  s_PosX = w.x;
+  s_PosY = w.y;
+  s_PosZ = w.z;
+  s_Pitch = pitch;
+  s_Yaw = yaw;
+  g_CamRoll = roll;
+  g_CamFOV = fov;
+  s_SequenceAttachActive = true;
+  s_SequenceAttachEntity = entity;
+  s_SequenceAttachOffX = localOffsetX;
+  s_SequenceAttachOffY = localOffsetY;
+  s_SequenceAttachOffZ = localOffsetZ;
 }
 
 void SequencePushToEngine(float dt) {
@@ -1658,6 +1698,33 @@ void SequencePushToEngine(float dt) {
   // some reason the cam isn't up, bail.
   if (s_Cam == 0)
     return;
+
+  // Two routing modes based on whether the current playback segment is
+  // anchored to an entity:
+  //
+  //   Attach path (s_SequenceAttachActive): when both endpoints of the
+  //   current spline segment are locked to the same entity, the sequence
+  //   driver computed an entity-local offset for this frame. We bind
+  //   the camera to that entity via ATTACH_CAM_TO_ENTITY — the engine
+  //   then positions the camera relative to the entity at RENDER time,
+  //   AFTER physics has finalized. This is the only way to avoid the
+  //   one-frame lag between the entity's physics update and a script-
+  //   driven SET_CAM_COORD (which always reads stale entity coords).
+  //   Without this, riding-along-with-a-moving-vehicle looks shaky.
+  //
+  //   Detach path (default): clear any native attachment left over from
+  //   prior free-cam rigid follow or from a previous locked segment, so
+  //   SET_CAM_COORD below has authority. DETACH_CAM is idempotent —
+  //   harmless when the cam isn't actually attached.
+  bool useAttach = s_SequenceAttachActive && s_SequenceAttachEntity != 0 &&
+                   ENTITY::DOES_ENTITY_EXIST(s_SequenceAttachEntity);
+  if (useAttach) {
+    invoke<Void>(0xFEDB7D269E8C60E3, s_Cam, s_SequenceAttachEntity,
+                 s_SequenceAttachOffX, s_SequenceAttachOffY,
+                 s_SequenceAttachOffZ, TRUE); // ATTACH_CAM_TO_ENTITY
+  } else {
+    invoke<Void>(0xA2FABBE87F4BAD82, s_Cam, FALSE); // DETACH_CAM
+  }
 
   // Procedural shake during playback: ComputeShakeOffsets is normally
   // called by UpdateFreeCamera, which doesn't run while Sequence is
@@ -1676,8 +1743,17 @@ void SequencePushToEngine(float dt) {
     s_HasPrevPos = true;
   }
 
-  CAM::SET_CAM_COORD(s_Cam, s_PosX + shakeDx, s_PosY + shakeDy,
-                     s_PosZ + shakeDz);
+  // Skip SET_CAM_COORD when natively attached — the engine owns position
+  // in that mode and the call would be ignored. As a consequence, the
+  // position component of procedural shake is also a no-op for locked
+  // segments; this is the right trade-off because the lag-free entity
+  // follow it buys is more important than position jitter on a shot
+  // that's already deliberately rigid to a moving vehicle. Rotation and
+  // FOV are always pushed — both work whether attached or not.
+  if (!useAttach) {
+    CAM::SET_CAM_COORD(s_Cam, s_PosX + shakeDx, s_PosY + shakeDy,
+                       s_PosZ + shakeDz);
+  }
   CAM::SET_CAM_ROT(s_Cam, s_Pitch + shakePitchD,
                    g_CamRoll + shakeRollD, s_Yaw + shakeYawD, 2);
   invoke<Void>(0xB13C14F66A00D047, s_Cam, g_CamFOV); // SET_CAM_FOV (real-time)

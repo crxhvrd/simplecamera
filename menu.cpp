@@ -1947,6 +1947,7 @@ static void ProcessPoseListMenu();
 static void ProcessPoseEditMenu(int poseIdx);
 static void ProcessEventListMenu();
 static void ProcessEventEditMenu(int eventIdx);
+static void ProcessSequenceFollowMenu();
 
 // Step size for left/right adjustment of an event's value, picked by
 // kind: integer-valued kinds (toggles + preset index + trigger) step
@@ -2023,13 +2024,27 @@ static std::string FormatTimeSec(float t) {
 
 static bool ProcessSequenceMenu() {
   const float lineWidth = 320.0f;
-  const int lineCount = 15;
+  // 18 rows. "Follow & Entity Lock..." sits between Close Loop and Show
+  // Markers so the lock-related controls cluster near the visual toggles.
+  // Hide HUD + Hide Player ride above Exit so the user can clean the
+  // viewport for composition without leaving Sequence mode.
+  //
+  // The row count exceeds kMaxVisibleListRows (12), so we render through
+  // the same scroll-window pattern that ProcessPoseListMenu / Movement
+  // Settings use: scrollOffset persists across the inner draw loop,
+  // EnsureRowVisible keeps the cursor in view, vis() / rowTop() drive
+  // per-row visibility and Y placement.
+  const int lineCount = 18;
   int activeIdx = 0;
+  int scrollOffset = 0;
 
   DWORD waitTime = 150;
   while (true) {
     int seqIdx = Sequence_ActiveIndex();
     int seqCount = Sequence_Count();
+    EnsureRowVisible(activeIdx, lineCount, scrollOffset);
+    int visEnd = scrollOffset + kMaxVisibleListRows;
+    if (visEnd > lineCount) visEnd = lineCount;
 
     DWORD maxTick = GetTickCount() + waitTime;
     do {
@@ -2040,16 +2055,36 @@ static bool ProcessSequenceMenu() {
       char seqIdxBuf[32]; sprintf_s(seqIdxBuf, " [%d/%d]", seqIdx + 1, seqCount);
       seqLabel += seqIdxBuf;
 
-      DrawMenuLine("CAMERA SEQUENCE", "", lineWidth, 15.0, 18.0, 0.0, 5.0,
-                   false, true);
+      // Title bar shows scroll range when not all rows fit on screen, so
+      // the user can tell at a glance there's more content above / below.
+      char title[64];
+      if (lineCount > kMaxVisibleListRows) {
+        sprintf_s(title, "CAMERA SEQUENCE  [%d-%d / %d]", scrollOffset + 1,
+                  visEnd, lineCount);
+      } else {
+        sprintf_s(title, "CAMERA SEQUENCE");
+      }
+      DrawMenuLine(title, "", lineWidth, 15.0, 18.0, 0.0, 5.0, false, true);
 
-      DrawMenuValue("Sequence", seqLabel, lineWidth, 9.0,
-                    60.0 + 0 * 36.0, 0.0, 9.0, activeIdx == 0);
-      DrawMenuValue("Play / Pause",
-                    Sequence_IsPlaying() ? "Playing" : "Paused", lineWidth,
-                    9.0, 60.0 + 1 * 36.0, 0.0, 9.0, activeIdx == 1);
-      DrawMenuValue("Stop", "Press Enter", lineWidth, 9.0, 60.0 + 2 * 36.0, 0.0,
-                    9.0, activeIdx == 2);
+      // Visibility predicate + Y mapping for the scroll viewport. Each
+      // logical row `r` only renders if it falls inside [scrollOffset,
+      // scrollOffset + kMaxVisibleListRows); `rowTop(r)` maps it to the
+      // on-screen Y by subtracting the scroll offset.
+      auto vis = [&](int r) {
+        return r >= scrollOffset && r < scrollOffset + kMaxVisibleListRows;
+      };
+      auto rowTop = [&](int r) { return 60.0f + (r - scrollOffset) * 36.0f; };
+
+      if (vis(0))
+        DrawMenuValue("Sequence", seqLabel, lineWidth, 9.0,
+                      rowTop(0), 0.0, 9.0, activeIdx == 0);
+      if (vis(1))
+        DrawMenuValue("Play / Pause",
+                      Sequence_IsPlaying() ? "Playing" : "Paused", lineWidth,
+                      9.0, rowTop(1), 0.0, 9.0, activeIdx == 1);
+      if (vis(2))
+        DrawMenuValue("Stop", "Press Enter", lineWidth, 9.0, rowTop(2), 0.0,
+                      9.0, activeIdx == 2);
       // Loop value shows closed-status when on, so the user can tell
       // whether the wrap is seamless or jumpy without checking the gap.
       std::string loopStr;
@@ -2060,53 +2095,100 @@ static bool ProcessSequenceMenu() {
       } else {
         loopStr = "On (open)";
       }
-      DrawMenuValue("Loop", loopStr, lineWidth, 9.0,
-                    60.0 + 3 * 36.0, 0.0, 9.0, activeIdx == 3);
-      DrawMenuValue("Speed", FormatFloat(s ? s->playbackSpeed : 1.0f, 2),
-                    lineWidth, 9.0, 60.0 + 4 * 36.0, 0.0, 9.0, activeIdx == 4);
+      if (vis(3))
+        DrawMenuValue("Loop", loopStr, lineWidth, 9.0,
+                      rowTop(3), 0.0, 9.0, activeIdx == 3);
+      if (vis(4))
+        DrawMenuValue("Speed", FormatFloat(s ? s->playbackSpeed : 1.0f, 2),
+                      lineWidth, 9.0, rowTop(4), 0.0, 9.0, activeIdx == 4);
 
       char timeStr[48];
       sprintf_s(timeStr, "%.2fs / %.2fs", Sequence_CurrentTime(),
                 Sequence_TotalDuration());
-      DrawMenuValue("Time", timeStr, lineWidth, 9.0, 60.0 + 5 * 36.0, 0.0, 9.0,
-                    activeIdx == 5);
+      if (vis(5))
+        DrawMenuValue("Time", timeStr, lineWidth, 9.0, rowTop(5), 0.0, 9.0,
+                      activeIdx == 5);
 
       char countBuf[32];
-      sprintf_s(countBuf, "%d", s ? (int)s->poses.size() : 0);
-      DrawMenuValue("Pose Keyframes...", countBuf, lineWidth, 9.0,
-                    60.0 + 6 * 36.0, 0.0, 9.0, activeIdx == 6);
-      sprintf_s(countBuf, "%d", s ? (int)s->events.size() : 0);
-      DrawMenuValue("Effect Events...", countBuf, lineWidth, 9.0,
-                    60.0 + 7 * 36.0, 0.0, 9.0, activeIdx == 7);
+      if (vis(6)) {
+        sprintf_s(countBuf, "%d", s ? (int)s->poses.size() : 0);
+        DrawMenuValue("Pose Keyframes...", countBuf, lineWidth, 9.0,
+                      rowTop(6), 0.0, 9.0, activeIdx == 6);
+      }
+      if (vis(7)) {
+        sprintf_s(countBuf, "%d", s ? (int)s->events.size() : 0);
+        DrawMenuValue("Effect Events...", countBuf, lineWidth, 9.0,
+                      rowTop(7), 0.0, 9.0, activeIdx == 7);
+      }
 
-      DrawMenuValue("Capture Current Pose", "F6", lineWidth, 9.0,
-                    60.0 + 8 * 36.0, 0.0, 9.0, activeIdx == 8);
-      DrawMenuValue("New Sequence", "Press Enter", lineWidth, 9.0,
-                    60.0 + 9 * 36.0, 0.0, 9.0, activeIdx == 9);
-      DrawMenuValue("Delete Active Sequence", "Press Enter", lineWidth, 9.0,
-                    60.0 + 10 * 36.0, 0.0, 9.0, activeIdx == 10);
-      DrawMenuValue("Save All to INI", "Press Enter", lineWidth, 9.0,
-                    60.0 + 11 * 36.0, 0.0, 9.0, activeIdx == 11);
+      if (vis(8))
+        DrawMenuValue("Capture Current Pose", "F6", lineWidth, 9.0,
+                      rowTop(8), 0.0, 9.0, activeIdx == 8);
+      if (vis(9))
+        DrawMenuValue("New Sequence", "Press Enter", lineWidth, 9.0,
+                      rowTop(9), 0.0, 9.0, activeIdx == 9);
+      if (vis(10))
+        DrawMenuValue("Delete Active Sequence", "Press Enter", lineWidth, 9.0,
+                      rowTop(10), 0.0, 9.0, activeIdx == 10);
+      if (vis(11))
+        DrawMenuValue("Save All to INI", "Press Enter", lineWidth, 9.0,
+                      rowTop(11), 0.0, 9.0, activeIdx == 11);
       // Close Loop — shows gap diagnostics when there's something to
       // close, so the user can see how far off the seam is before acting.
       // Uses ASCII only ("d=" / "deg") because the GTA Chalet Comprime
       // font lacks glyphs for Δ and ° at small sizes — they render as
       // missing-glyph boxes.
-      std::string closeStr = "Press Enter";
-      LoopGap gap;
-      if (Sequence_GetLoopGap(&gap)) {
-        char buf[64];
-        sprintf_s(buf, "d=%.2fm / %.1f deg", gap.posDist,
-                  gap.pitchDelta + gap.yawDelta + gap.rollDelta);
-        closeStr = buf;
+      if (vis(12)) {
+        std::string closeStr = "Press Enter";
+        LoopGap gap;
+        if (Sequence_GetLoopGap(&gap)) {
+          char buf[64];
+          sprintf_s(buf, "d=%.2fm / %.1f deg", gap.posDist,
+                    gap.pitchDelta + gap.yawDelta + gap.rollDelta);
+          closeStr = buf;
+        }
+        DrawMenuValue("Close Loop", closeStr, lineWidth, 9.0,
+                      rowTop(12), 0.0, 9.0, activeIdx == 12);
       }
-      DrawMenuValue("Close Loop", closeStr, lineWidth, 9.0,
-                    60.0 + 12 * 36.0, 0.0, 9.0, activeIdx == 12);
-      DrawMenuValue("Show Markers", FormatBool(g_SequenceShowMarkers),
-                    lineWidth, 9.0, 60.0 + 13 * 36.0, 0.0, 9.0,
-                    activeIdx == 13);
-      DrawMenuValue("Exit", "Mode picker", lineWidth, 9.0,
-                    60.0 + 14 * 36.0, 0.0, 9.0, activeIdx == 14);
+
+      // "Follow & Entity Lock..." — value column shows a quick status
+      // glance: current follow target + how many keyframes in the active
+      // sequence carry a lock. Saves the user a drill-down to check.
+      if (vis(13)) {
+        const char *followLabel = "None";
+        if (g_FollowMode == 1)      followLabel = "Player";
+        else if (g_FollowMode == 2) followLabel = (g_FollowTargetEntity != 0)
+                                                    ? "Aimed (locked)"
+                                                    : "Aimed (unlocked)";
+        char followVal[64];
+        int lockedCount = Sequence_LockedPoseCount();
+        int totalPoses  = s ? (int)s->poses.size() : 0;
+        sprintf_s(followVal, "%s  -  %d/%d locked", followLabel, lockedCount,
+                  totalPoses);
+        DrawMenuValue("Follow & Entity Lock...", followVal, lineWidth, 9.0,
+                      rowTop(13), 0.0, 9.0, activeIdx == 13);
+      }
+
+      if (vis(14))
+        DrawMenuValue("Show Markers", FormatBool(g_SequenceShowMarkers),
+                      lineWidth, 9.0, rowTop(14), 0.0, 9.0,
+                      activeIdx == 14);
+      // Visibility toggles. g_HidePlayer defaults to true the moment we
+      // enter Sequence mode (InitFreeCamera flips it); expose the
+      // toggle here so users can show the player ped while composing
+      // shots with the ped in frame. UpdateGlobalEffects (called every
+      // tick) applies the visibility state to the player ped, so the
+      // toggle takes effect instantly.
+      if (vis(15))
+        DrawMenuValue("Hide HUD", FormatBool(g_HideHUD), lineWidth, 9.0,
+                      rowTop(15), 0.0, 9.0, activeIdx == 15);
+      if (vis(16))
+        DrawMenuValue("Hide Player Character", FormatBool(g_HidePlayer),
+                      lineWidth, 9.0, rowTop(16), 0.0, 9.0,
+                      activeIdx == 16);
+      if (vis(17))
+        DrawMenuValue("Exit", "Mode picker", lineWidth, 9.0,
+                      rowTop(17), 0.0, 9.0, activeIdx == 17);
 
       // Drive the sequence mode every frame while this menu is open.
       // script.cpp's main loop is blocked at ProcessConfigMenu(), so it
@@ -2182,11 +2264,22 @@ static bool ProcessSequenceMenu() {
         break;
       }
       case 13:
+        ProcessSequenceFollowMenu();
+        break;
+      case 14:
         g_SequenceShowMarkers = !g_SequenceShowMarkers;
         SetStatusText(g_SequenceShowMarkers ? "Markers visible"
                                             : "Markers hidden");
         break;
-      case 14: return true; // Exit → return to mode picker
+      case 15:
+        g_HideHUD = !g_HideHUD;
+        SetStatusText(g_HideHUD ? "HUD Hidden" : "HUD Visible");
+        break;
+      case 16:
+        g_HidePlayer = !g_HidePlayer;
+        SetStatusText(g_HidePlayer ? "Player Hidden" : "Player Visible");
+        break;
+      case 17: return true; // Exit → return to mode picker
       }
       waitTime = 200;
     }
@@ -2216,6 +2309,408 @@ static bool ProcessSequenceMenu() {
         if (s->playbackSpeed < 0.05f) s->playbackSpeed = 0.05f;
       } else if (activeIdx == 5) {
         Sequence_SetCurrentTime(Sequence_CurrentTime() - 0.1f);
+      }
+      waitTime = 100;
+    }
+  }
+}
+
+// ============================================================
+//  Follow & Entity Lock — submenu under Camera Sequence
+// ============================================================
+//
+// Self-contained version of the follow/lock controls from the Free
+// Camera Movement menu, plus two sequence-specific batch actions
+// (Apply Lock to All Keyframes / Clear All Locks). Lives in the
+// Sequence main menu so the user can compose entity-locked shots
+// without leaving Sequence mode.
+//
+// The dynamic row layout mirrors the Free Camera version: rows below
+// Follow Target only appear when relevant (Lock Entity when Aimed mode
+// is on; Rigid + Marker only when an entity is actually locked). The
+// batch actions sit at the bottom and are always present so the user
+// can wipe locks even when the free-cam currently has no target.
+
+static void ProcessSequenceFollowMenu() {
+  const float lineWidth = 360.0f;
+  int activeIdx = 0;
+
+  DWORD waitTime = 150;
+  while (true) {
+    // "Player's vehicle" row is only meaningful while the player ped is
+    // actually in a vehicle — peek the natives so we can hide the row
+    // (and its shortcut) when there's nothing to lock to. Computed once
+    // per outer iteration so render + input passes agree on the layout.
+    int playerVeh = 0;
+    {
+      Ped pp = PLAYER::PLAYER_PED_ID();
+      if (PED::IS_PED_IN_ANY_VEHICLE(pp, FALSE)) {
+        playerVeh = PED::GET_VEHICLE_PED_IS_IN(pp, FALSE);
+        if (!ENTITY::DOES_ENTITY_EXIST(playerVeh)) playerVeh = 0;
+      }
+    }
+
+    // "Has lock target" — the union of Player follow (always has a
+    // target: the player ped) and Aimed Entity with a locked handle.
+    // Both can drive keyframe locks, so the batch / Rigid / Marker rows
+    // treat them uniformly.
+    bool hasLockTarget = (g_FollowMode == 1) ||
+                         (g_FollowMode == 2 && g_FollowTargetEntity != 0);
+
+    // Dynamic row count.
+    //  Mode 1 (Player):
+    //    0  Follow Target
+    //    1  Rigid Mode
+    //    2  Show Marker
+    //    3..5 Batch actions
+    //
+    //  Mode 2 (Aimed):
+    //    0  Follow Target
+    //    1  Lock Entity (raycast)
+    //    2  Lock to Nearest Vehicle
+    //   [3] Lock to Player's Vehicle  (only when player is in one)
+    //   [N] Rigid Mode + Show Marker  (only when locked)
+    //    .. Batch actions
+    //
+    // The two "Lock to X" rows are foolproof fallbacks for the raycast,
+    // which fails when the camera is inside the target's collision volume
+    // (close-up vehicle shots, especially). The raycast row stays at the
+    // top because it's the most precise option when it works.
+    int lineCount = 1 + 3; // Follow Target + 3 batch actions
+    if (g_FollowMode == 1) {
+      lineCount += 2; // Rigid + Marker (player ped is the implicit target)
+    } else if (g_FollowMode == 2) {
+      lineCount += 1; // Lock Entity (raycast)
+      lineCount += 1; // Lock to Nearest Vehicle
+      if (playerVeh != 0) lineCount += 1; // Lock to Player's Vehicle
+      if (g_FollowTargetEntity != 0) lineCount += 2; // Rigid + Marker
+    }
+
+    DWORD maxTick = GetTickCount() + waitTime;
+    do {
+      DisableMenuPhoneControls();
+
+      char title[64];
+      sprintf_s(title, "FOLLOW & ENTITY LOCK");
+      DrawMenuLine(title, "", lineWidth, 15.0, 18.0, 0.0, 5.0, false, true);
+
+      // Follow Target row — shared with the Movement menu's display so
+      // the user sees consistent labels everywhere.
+      std::string followStr = "None";
+      if (g_FollowMode == 1)      followStr = "Player";
+      else if (g_FollowMode == 2) followStr = "Aimed Entity";
+      DrawMenuValue("Follow Target", followStr, lineWidth, 9.0,
+                    60.0 + 0 * 36.0, 0.0, 9.0, activeIdx == 0);
+
+      int row = 1;
+      int lockIdx = -1, lockNearestIdx = -1, lockPlayerVehIdx = -1;
+      int rigidIdx = -1, markerIdx = -1;
+      if (g_FollowMode == 1) {
+        // Player follow: ped is the implicit target. Just expose the
+        // two togglable behaviors that apply to it.
+        rigidIdx = row;
+        DrawMenuValue("  - Rigid Mode", FormatBool(g_FollowRigidMode),
+                      lineWidth, 9.0, 60.0 + row * 36.0, 0.0, 9.0,
+                      activeIdx == row);
+        row++;
+        markerIdx = row;
+        DrawMenuValue("  - Show Marker", FormatBool(g_ShowLockedEntityMarker),
+                      lineWidth, 9.0, 60.0 + row * 36.0, 0.0, 9.0,
+                      activeIdx == row);
+        row++;
+      } else if (g_FollowMode == 2) {
+        lockIdx = row;
+        std::string entityStr = (g_FollowTargetEntity == 0)
+                                    ? "Aim at entity, Enter to lock"
+                                    : "Locked - Enter to release";
+        DrawMenuValue("  - Lock Entity (raycast)", entityStr, lineWidth, 9.0,
+                      60.0 + row * 36.0, 0.0, 9.0, activeIdx == row);
+        row++;
+        // Two raycast-free fallbacks. Useful because:
+        //  - Cars have chunky collision; if the camera is inside the
+        //    bounding volume (close-up shots), START_SHAPE_TEST_RAY can
+        //    return no hit. GET_CLOSEST_VEHICLE works regardless.
+        //  - "Lock to Player's Vehicle" is the common case for in-car
+        //    cinematic shots — one click and the camera tracks the car
+        //    the player is driving.
+        lockNearestIdx = row;
+        DrawMenuValue("  - Lock to Nearest Vehicle", "Press Enter", lineWidth,
+                      9.0, 60.0 + row * 36.0, 0.0, 9.0, activeIdx == row);
+        row++;
+        if (playerVeh != 0) {
+          lockPlayerVehIdx = row;
+          DrawMenuValue("  - Lock to Player's Vehicle", "Press Enter",
+                        lineWidth, 9.0, 60.0 + row * 36.0, 0.0, 9.0,
+                        activeIdx == row);
+          row++;
+        }
+        if (g_FollowTargetEntity != 0) {
+          rigidIdx = row;
+          DrawMenuValue("  - Rigid Mode", FormatBool(g_FollowRigidMode),
+                        lineWidth, 9.0, 60.0 + row * 36.0, 0.0, 9.0,
+                        activeIdx == row);
+          row++;
+          markerIdx = row;
+          DrawMenuValue("  - Show Marker", FormatBool(g_ShowLockedEntityMarker),
+                        lineWidth, 9.0, 60.0 + row * 36.0, 0.0, 9.0,
+                        activeIdx == row);
+          row++;
+        }
+
+        // Hover marker: while in Aimed mode with no target yet, fire the
+        // same raycast the Movement menu uses and draw a marker on the
+        // entity under the crosshair so the user can see what they're
+        // about to lock.
+        if (g_FollowTargetEntity == 0) {
+          float posX, posY, posZ, pitch, yaw, roll;
+          GetCameraState(posX, posY, posZ, pitch, yaw, roll);
+          float yawRad = yaw * 0.0174532925f;
+          float pitchRad = pitch * 0.0174532925f;
+          float dirX = -sinf(yawRad) * cosf(pitchRad);
+          float dirY = cosf(yawRad) * cosf(pitchRad);
+          float dirZ = sinf(pitchRad);
+          float endX = posX + dirX * 1000.0f;
+          float endY = posY + dirY * 1000.0f;
+          float endZ = posZ + dirZ * 1000.0f;
+          // Flags 30 = vehicles(2) | peds(4) | ragdolls(8) | objects(16).
+          // The original Movement-menu raycast used 14 (no objects); we
+          // widen here so e.g. parked-prop scenery can also be locked.
+          int rayHandle = invoke<int>(0x377906D8A31E5586, posX, posY, posZ,
+                                      endX, endY, endZ, 30,
+                                      PLAYER::PLAYER_PED_ID(), 7);
+          int hit = 0, entityHit = 0;
+          Vector3 ignore1{}, ignore2{};
+          invoke<int>(0x3D87450E15D98694, rayHandle, &hit, &ignore1, &ignore2,
+                      &entityHit);
+          if (hit && entityHit != 0 && ENTITY::DOES_ENTITY_EXIST(entityHit) &&
+              (ENTITY::IS_ENTITY_A_PED(entityHit) ||
+               ENTITY::IS_ENTITY_A_VEHICLE(entityHit) ||
+               ENTITY::IS_ENTITY_AN_OBJECT(entityHit))) {
+            Vector3 entPos = ENTITY::GET_ENTITY_COORDS(entityHit, TRUE);
+            GRAPHICS::DRAW_MARKER(0, entPos.x, entPos.y, entPos.z + 1.25f, 0,
+                                  0, 0, 0, 0, 0, 0.4f, 0.4f, 0.4f, 255, 255,
+                                  255, 200, TRUE, TRUE, 2, FALSE, NULL, NULL,
+                                  FALSE);
+          }
+        }
+      }
+
+      // Batch action rows always present.
+      int applyAllIdx     = row++;
+      int clearAllIdx     = row++;
+      int recaptureAllIdx = row++;
+
+      int lockedCount = Sequence_LockedPoseCount();
+      CameraSequence *seq = Sequence_Active();
+      int totalPoses = seq ? (int)seq->poses.size() : 0;
+      char applyVal[64], clearVal[64];
+      sprintf_s(applyVal, "%s",
+                hasLockTarget ? "Press Enter" : "(lock free-cam first)");
+      sprintf_s(clearVal, "%d / %d locked", lockedCount, totalPoses);
+      DrawMenuValue("Apply Lock to All Keyframes", applyVal, lineWidth, 9.0,
+                    60.0 + applyAllIdx * 36.0, 0.0, 9.0,
+                    activeIdx == applyAllIdx);
+      DrawMenuValue("Clear All Keyframe Locks", clearVal, lineWidth, 9.0,
+                    60.0 + clearAllIdx * 36.0, 0.0, 9.0,
+                    activeIdx == clearAllIdx);
+      // "Recapture World Coords" bakes the entity's current world
+      // position into the keyframe's world-space fallback. Useful right
+      // before clearing locks if the user wants to "freeze in place"
+      // (otherwise the fallback coords still point to where the entity
+      // was when the keyframe was originally authored).
+      DrawMenuValue("Bake Locked Poses to World", "Press Enter", lineWidth,
+                    9.0, 60.0 + recaptureAllIdx * 36.0, 0.0, 9.0,
+                    activeIdx == recaptureAllIdx);
+
+      // Tick playback / free-cam every frame so the user can compose
+      // shots while this menu is open (same pattern as ProcessPoseListMenu).
+      if (Sequence_IsInMode()) Sequence_FrameTick();
+      UpdateStatusText();
+      UpdateGlobalEffects();
+      WAIT(0);
+    } while (GetTickCount() < maxTick);
+    waitTime = 0;
+
+    // Recompute row indices for the input pass — the draw pass clobbers
+    // the locals once it exits the do-while above. Keep this in lockstep
+    // with the same layout used for rendering above.
+    int row2 = 1;
+    int lockIdx2 = -1, lockNearestIdx2 = -1, lockPlayerVehIdx2 = -1;
+    int rigidIdx2 = -1, markerIdx2 = -1;
+    if (g_FollowMode == 1) {
+      rigidIdx2 = row2++;
+      markerIdx2 = row2++;
+    } else if (g_FollowMode == 2) {
+      lockIdx2 = row2++;
+      lockNearestIdx2 = row2++;
+      if (playerVeh != 0) lockPlayerVehIdx2 = row2++;
+      if (g_FollowTargetEntity != 0) {
+        rigidIdx2 = row2++;
+        markerIdx2 = row2++;
+      }
+    }
+    int applyAllIdx2 = row2++;
+    int clearAllIdx2 = row2++;
+    int recaptureAllIdx2 = row2++;
+
+    bool bSelect, bBack, bUp, bDown, bLeft, bRight;
+    GetMenuButtons(&bSelect, &bBack, &bUp, &bDown, &bLeft, &bRight);
+
+    if (bBack) { MenuBeep(); return; }
+    if (bUp)   { MenuBeep(); activeIdx = (activeIdx == 0) ? lineCount - 1 : activeIdx - 1; waitTime = 150; }
+    if (bDown) { MenuBeep(); activeIdx = (activeIdx + 1) % lineCount; waitTime = 150; }
+
+    if (bSelect) {
+      MenuBeep();
+      if (activeIdx == 0) {
+        // Enter cycles follow mode the same way the Movement menu's
+        // right-arrow does. Player follow is skipped when Move Player
+        // is on (would create a recursive lock — same guard as Movement).
+        g_FollowMode = (g_FollowMode + 1) % 3;
+        if (g_FollowMode == 1 && g_MovePlayerWithCamera) g_FollowMode = 2;
+        if (g_FollowMode != 2) g_FollowTargetEntity = 0;
+        const char *names[3] = {"Follow: None", "Follow: Player",
+                                "Follow: Aimed Entity"};
+        SetStatusText(names[g_FollowMode]);
+      } else if (lockIdx2 != -1 && activeIdx == lockIdx2) {
+        if (g_FollowTargetEntity != 0) {
+          g_FollowTargetEntity = 0;
+          SetStatusText("Entity unlocked");
+        } else {
+          // Raycast forward from the camera and lock onto whatever the
+          // user is aiming at. 14 = vehicles|peds|objects flags.
+          float posX, posY, posZ, pitch, yaw, roll;
+          GetCameraState(posX, posY, posZ, pitch, yaw, roll);
+          float yawRad = yaw * 0.0174532925f;
+          float pitchRad = pitch * 0.0174532925f;
+          float dirX = -sinf(yawRad) * cosf(pitchRad);
+          float dirY = cosf(yawRad) * cosf(pitchRad);
+          float dirZ = sinf(pitchRad);
+          float endX = posX + dirX * 1000.0f;
+          float endY = posY + dirY * 1000.0f;
+          float endZ = posZ + dirZ * 1000.0f;
+          // Flags 30 = vehicles(2) | peds(4) | ragdolls(8) | objects(16).
+          // The original Movement-menu raycast used 14 (no objects); we
+          // widen here so e.g. parked-prop scenery can also be locked.
+          int rayHandle = invoke<int>(0x377906D8A31E5586, posX, posY, posZ,
+                                      endX, endY, endZ, 30,
+                                      PLAYER::PLAYER_PED_ID(), 7);
+          int hit = 0, entityHit = 0;
+          Vector3 ignore1{}, ignore2{};
+          invoke<int>(0x3D87450E15D98694, rayHandle, &hit, &ignore1, &ignore2,
+                      &entityHit);
+          if (hit && entityHit != 0 && ENTITY::DOES_ENTITY_EXIST(entityHit) &&
+              (ENTITY::IS_ENTITY_A_PED(entityHit) ||
+               ENTITY::IS_ENTITY_A_VEHICLE(entityHit) ||
+               ENTITY::IS_ENTITY_AN_OBJECT(entityHit))) {
+            g_FollowTargetEntity = entityHit;
+            SetStatusText("Locked onto entity");
+          } else {
+            g_FollowTargetEntity = 0;
+            SetStatusText("No entity found. Aim closer.");
+          }
+        }
+      } else if (lockNearestIdx2 != -1 && activeIdx == lockNearestIdx2) {
+        // GET_CLOSEST_VEHICLE search around the current camera position.
+        // 30m radius is roughly "anything that's clearly in shot"; bigger
+        // would risk locking to a vehicle behind the user. modelHash=0
+        // means any model. Flags 70 = 2|4|64 — civilian + already-spawned
+        // + don't include trains; the de-facto "any normal vehicle" combo
+        // used widely in scripts.
+        float posX, posY, posZ, pitch, yaw, roll;
+        GetCameraState(posX, posY, posZ, pitch, yaw, roll);
+        int veh = VEHICLE::GET_CLOSEST_VEHICLE(posX, posY, posZ, 30.0f, 0, 70);
+        if (veh != 0 && ENTITY::DOES_ENTITY_EXIST(veh)) {
+          g_FollowTargetEntity = veh;
+          SetStatusText("Locked onto nearest vehicle");
+        } else {
+          SetStatusText("No vehicle within 30m");
+        }
+      } else if (lockPlayerVehIdx2 != -1 && activeIdx == lockPlayerVehIdx2) {
+        // Recomputed here rather than reusing playerVeh — between the row
+        // layout pass and this input pass the player could have exited
+        // the vehicle. Defensive recheck keeps the lock honest.
+        Ped pp = PLAYER::PLAYER_PED_ID();
+        int veh = PED::IS_PED_IN_ANY_VEHICLE(pp, FALSE)
+                      ? PED::GET_VEHICLE_PED_IS_IN(pp, FALSE)
+                      : 0;
+        if (veh != 0 && ENTITY::DOES_ENTITY_EXIST(veh)) {
+          g_FollowTargetEntity = veh;
+          SetStatusText("Locked onto player's vehicle");
+        } else {
+          SetStatusText("Player isn't in a vehicle");
+        }
+      } else if (rigidIdx2 != -1 && activeIdx == rigidIdx2) {
+        g_FollowRigidMode = !g_FollowRigidMode;
+        SetStatusText(g_FollowRigidMode ? "Rigid mode on (cam rotates with entity)"
+                                        : "Rigid mode off");
+      } else if (markerIdx2 != -1 && activeIdx == markerIdx2) {
+        g_ShowLockedEntityMarker = !g_ShowLockedEntityMarker;
+        SetStatusText(g_ShowLockedEntityMarker ? "Marker visible"
+                                               : "Marker hidden");
+      } else if (activeIdx == applyAllIdx2) {
+        // Resolve the current free-cam target. Player follow → player
+        // ped; Aimed mode → the locked handle; nothing → bail.
+        int target = 0;
+        if (g_FollowMode == 1)      target = PLAYER::PLAYER_PED_ID();
+        else if (g_FollowMode == 2) target = g_FollowTargetEntity;
+        if (target == 0 || !ENTITY::DOES_ENTITY_EXIST(target)) {
+          SetStatusText("Lock free-cam to a target first");
+        } else {
+          int n = Sequence_ApplyLockToAll(target);
+          char msg[64];
+          sprintf_s(msg, "Locked %d keyframes to current target", n);
+          SetStatusText(msg);
+        }
+      } else if (activeIdx == clearAllIdx2) {
+        int n = Sequence_ClearAllLocks();
+        char msg[64];
+        sprintf_s(msg, "Cleared lock from %d keyframes", n);
+        SetStatusText(msg);
+      } else if (activeIdx == recaptureAllIdx2) {
+        // For every locked keyframe whose entity still exists, write
+        // the current world position back into the world-space coords.
+        // Effectively: snapshot the lock to a static world position so
+        // the keyframe still works after the entity is gone. Pairs well
+        // with "Clear All Locks" right after for a permanent bake.
+        CameraSequence *cs = Sequence_Active();
+        int n = 0;
+        if (cs) {
+          for (PoseKeyframe &p : cs->poses) {
+            if (p.entityHandle != 0 &&
+                ENTITY::DOES_ENTITY_EXIST(p.entityHandle)) {
+              Vector3 w = invoke<Vector3>(0x1899F328B0E12848, p.entityHandle,
+                                          p.localOffsetX, p.localOffsetY,
+                                          p.localOffsetZ);
+              p.posX = w.x; p.posY = w.y; p.posZ = w.z;
+              ++n;
+            }
+          }
+        }
+        char msg[64];
+        sprintf_s(msg, "Baked %d locked poses to world coords", n);
+        SetStatusText(msg);
+      }
+      waitTime = 200;
+    }
+
+    // Left/right cycles the Follow Target same as Enter (matches
+    // Movement menu UX). The two boolean rows toggle on left/right too.
+    if (bRight || bLeft) {
+      MenuBeep();
+      if (activeIdx == 0) {
+        if (bRight) {
+          g_FollowMode = (g_FollowMode + 1) % 3;
+          if (g_FollowMode == 1 && g_MovePlayerWithCamera) g_FollowMode = 2;
+        } else {
+          g_FollowMode = (g_FollowMode == 0) ? 2 : g_FollowMode - 1;
+          if (g_FollowMode == 1 && g_MovePlayerWithCamera) g_FollowMode = 0;
+        }
+        if (g_FollowMode != 2) g_FollowTargetEntity = 0;
+      } else if (rigidIdx2 != -1 && activeIdx == rigidIdx2) {
+        g_FollowRigidMode = !g_FollowRigidMode;
+      } else if (markerIdx2 != -1 && activeIdx == markerIdx2) {
+        g_ShowLockedEntityMarker = !g_ShowLockedEntityMarker;
       }
       waitTime = 100;
     }
@@ -2317,7 +2812,19 @@ static void ProcessPoseListMenu() {
 
 static void ProcessPoseEditMenu(int poseIdx) {
   const float lineWidth = 320.0f;
-  const int lineCount = 12;
+  // 13 rows: Time, Pos X/Y/Z, Pitch, Yaw, Roll, FOV, Ease, Path,
+  //          Entity Lock, Recapture, Delete.
+  const int lineCount = 13;
+  // Row indices (kept as locals so adding rows in the future only needs
+  // updating this block + the corresponding case statements below).
+  const int IDX_TIME = 0;
+  const int IDX_POSX = 1, IDX_POSY = 2, IDX_POSZ = 3;
+  const int IDX_PITCH = 4, IDX_YAW = 5, IDX_ROLL = 6;
+  const int IDX_FOV = 7;
+  const int IDX_EASE = 8, IDX_PATH = 9;
+  const int IDX_LOCK = 10;
+  const int IDX_RECAPTURE = 11;
+  const int IDX_DELETE = 12;
   int activeIdx = 0;
   // Mark this pose as being edited so DrawSequenceMarkers paints its
   // in-world sphere distinctly. The RAII guard clears the marker on
@@ -2339,29 +2846,48 @@ static void ProcessPoseEditMenu(int poseIdx) {
       DrawMenuLine(title, "", lineWidth, 15.0, 18.0, 0.0, 5.0, false, true);
 
       DrawMenuValue("Time (s)", FormatFloat(p.t, 2), lineWidth, 9.0,
-                    60.0 + 0 * 36.0, 0.0, 9.0, activeIdx == 0);
+                    60.0 + IDX_TIME * 36.0, 0.0, 9.0, activeIdx == IDX_TIME);
       DrawMenuValue("Pos X", FormatFloat(p.posX, 2), lineWidth, 9.0,
-                    60.0 + 1 * 36.0, 0.0, 9.0, activeIdx == 1);
+                    60.0 + IDX_POSX * 36.0, 0.0, 9.0, activeIdx == IDX_POSX);
       DrawMenuValue("Pos Y", FormatFloat(p.posY, 2), lineWidth, 9.0,
-                    60.0 + 2 * 36.0, 0.0, 9.0, activeIdx == 2);
+                    60.0 + IDX_POSY * 36.0, 0.0, 9.0, activeIdx == IDX_POSY);
       DrawMenuValue("Pos Z", FormatFloat(p.posZ, 2), lineWidth, 9.0,
-                    60.0 + 3 * 36.0, 0.0, 9.0, activeIdx == 3);
+                    60.0 + IDX_POSZ * 36.0, 0.0, 9.0, activeIdx == IDX_POSZ);
       DrawMenuValue("Pitch", FormatFloat(p.pitch, 2), lineWidth, 9.0,
-                    60.0 + 4 * 36.0, 0.0, 9.0, activeIdx == 4);
+                    60.0 + IDX_PITCH * 36.0, 0.0, 9.0, activeIdx == IDX_PITCH);
       DrawMenuValue("Yaw", FormatFloat(p.yaw, 2), lineWidth, 9.0,
-                    60.0 + 5 * 36.0, 0.0, 9.0, activeIdx == 5);
+                    60.0 + IDX_YAW * 36.0, 0.0, 9.0, activeIdx == IDX_YAW);
       DrawMenuValue("Roll", FormatFloat(p.roll, 2), lineWidth, 9.0,
-                    60.0 + 6 * 36.0, 0.0, 9.0, activeIdx == 6);
+                    60.0 + IDX_ROLL * 36.0, 0.0, 9.0, activeIdx == IDX_ROLL);
       DrawMenuValue("FOV", FormatFloat(p.fov, 1), lineWidth, 9.0,
-                    60.0 + 7 * 36.0, 0.0, 9.0, activeIdx == 7);
+                    60.0 + IDX_FOV * 36.0, 0.0, 9.0, activeIdx == IDX_FOV);
       DrawMenuValue("Ease", EaseName(p.ease), lineWidth, 9.0,
-                    60.0 + 8 * 36.0, 0.0, 9.0, activeIdx == 8);
+                    60.0 + IDX_EASE * 36.0, 0.0, 9.0, activeIdx == IDX_EASE);
       DrawMenuValue("Path", PathName(p.path), lineWidth, 9.0,
-                    60.0 + 9 * 36.0, 0.0, 9.0, activeIdx == 9);
+                    60.0 + IDX_PATH * 36.0, 0.0, 9.0, activeIdx == IDX_PATH);
+      // Entity Lock value cycles through four readable states. The
+      // distinction between "Locked" and "Locked (entity lost)" is the
+      // load-time clearing of entityHandle: a saved keyframe that was
+      // authored locked comes back with the offsets intact but handle=0,
+      // so playback falls through to world coords. Surfacing that state
+      // lets the user know the keyframe wants to be re-anchored.
+      const char *lockStr;
+      if (p.entityHandle != 0) {
+        if (ENTITY::DOES_ENTITY_EXIST(p.entityHandle)) lockStr = "Locked";
+        else                                           lockStr = "Locked (entity gone)";
+      } else if (p.localOffsetX != 0.0f || p.localOffsetY != 0.0f ||
+                 p.localOffsetZ != 0.0f || p.lockEntPitch != 0.0f ||
+                 p.lockEntYaw != 0.0f || p.lockEntRoll != 0.0f) {
+        lockStr = "Authored locked";
+      } else {
+        lockStr = "None";
+      }
+      DrawMenuValue("Entity Lock", lockStr, lineWidth, 9.0,
+                    60.0 + IDX_LOCK * 36.0, 0.0, 9.0, activeIdx == IDX_LOCK);
       DrawMenuValue("Recapture from live", "Press Enter", lineWidth, 9.0,
-                    60.0 + 10 * 36.0, 0.0, 9.0, activeIdx == 10);
+                    60.0 + IDX_RECAPTURE * 36.0, 0.0, 9.0, activeIdx == IDX_RECAPTURE);
       DrawMenuValue("Delete", "Press Enter", lineWidth, 9.0,
-                    60.0 + 11 * 36.0, 0.0, 9.0, activeIdx == 11);
+                    60.0 + IDX_DELETE * 36.0, 0.0, 9.0, activeIdx == IDX_DELETE);
 
       if (Sequence_IsInMode()) Sequence_FrameTick();
       UpdateStatusText();
@@ -2389,27 +2915,59 @@ static void ProcessPoseEditMenu(int poseIdx) {
 
     if (bSelect) {
       MenuBeep();
-      switch (activeIdx) {
-      case 0: promptFloat(pose.t); break;
-      case 1: promptFloat(pose.posX); break;
-      case 2: promptFloat(pose.posY); break;
-      case 3: promptFloat(pose.posZ); break;
-      case 4: promptFloat(pose.pitch); break;
-      case 5: promptFloat(pose.yaw); break;
-      case 6: promptFloat(pose.roll); break;
-      case 7: promptFloat(pose.fov); break;
-      case 8: pose.ease = (EaseType)(((int)pose.ease + 1) % 5); break;
-      case 9: pose.path = (PathType)(((int)pose.path + 1) % 2); break;
-      case 10: {
+      if      (activeIdx == IDX_TIME)  promptFloat(pose.t);
+      else if (activeIdx == IDX_POSX)  promptFloat(pose.posX);
+      else if (activeIdx == IDX_POSY)  promptFloat(pose.posY);
+      else if (activeIdx == IDX_POSZ)  promptFloat(pose.posZ);
+      else if (activeIdx == IDX_PITCH) promptFloat(pose.pitch);
+      else if (activeIdx == IDX_YAW)   promptFloat(pose.yaw);
+      else if (activeIdx == IDX_ROLL)  promptFloat(pose.roll);
+      else if (activeIdx == IDX_FOV)   promptFloat(pose.fov);
+      else if (activeIdx == IDX_EASE)  pose.ease = (EaseType)(((int)pose.ease + 1) % 5);
+      else if (activeIdx == IDX_PATH)  pose.path = (PathType)(((int)pose.path + 1) % 2);
+      else if (activeIdx == IDX_LOCK) {
+        // Three-way toggle on Enter:
+        //   - Currently locked         → clear (handle=0 + offsets=0)
+        //   - Has stored offsets, no
+        //     handle (loaded from INI) → try to re-lock to current free-
+        //     cam target; if none, just clear the stale offsets
+        //   - Unlocked                 → try to lock to current free-cam
+        //     target; if none, status-message the user
+        if (pose.entityHandle != 0) {
+          pose.entityHandle = 0;
+          pose.localOffsetX = pose.localOffsetY = pose.localOffsetZ = 0.0f;
+          pose.lockEntPitch = pose.lockEntYaw = pose.lockEntRoll = 0.0f;
+          SetStatusText("Entity lock cleared");
+        } else if ((g_FollowMode == 1) ||
+                   (g_FollowMode == 2 && g_FollowTargetEntity != 0 &&
+                    ENTITY::DOES_ENTITY_EXIST(g_FollowTargetEntity))) {
+          // Player follow OR Aimed Entity with a target — both produce
+          // a valid keyframe lock via CaptureLockForPose.
+          Sequence_CaptureLockForPose(pose);
+          if (pose.entityHandle != 0) SetStatusText("Locked to free-cam target");
+          else                        SetStatusText("Lock failed");
+        } else {
+          // Authored-but-stale offsets: zero them so the value column
+          // doesn't keep advertising a lock that can't be re-applied
+          // without a free-cam target.
+          pose.localOffsetX = pose.localOffsetY = pose.localOffsetZ = 0.0f;
+          pose.lockEntPitch = pose.lockEntYaw = pose.lockEntRoll = 0.0f;
+          SetStatusText("Aim & lock in Free Camera first, then try again");
+        }
+      }
+      else if (activeIdx == IDX_RECAPTURE) {
         float px, py, pz, pitch, yaw, roll;
         GetCameraState(px, py, pz, pitch, yaw, roll);
         pose.posX = px; pose.posY = py; pose.posZ = pz;
         pose.pitch = pitch; pose.yaw = yaw; pose.roll = roll;
         pose.fov = g_CamFOV;
+        // Refresh the entity-lock snapshot too. If free-cam is currently
+        // locked, this picks up the new offset; if not, it clears any
+        // stale lock fields (matching the live-camera state exactly).
+        Sequence_CaptureLockForPose(pose);
         SetStatusText("Pose recaptured from live camera");
-        break;
       }
-      case 11:
+      else if (activeIdx == IDX_DELETE) {
         Sequence_DeletePose(poseIdx);
         SetStatusText("Keyframe deleted");
         return; // index is now stale; pop back to list
@@ -2417,37 +2975,35 @@ static void ProcessPoseEditMenu(int poseIdx) {
       waitTime = 200;
     }
 
-    // Left/right: nudge numeric values; cycle enums
+    // Left/right: nudge numeric values; cycle enums. Entity Lock, Recapture
+    // and Delete rows ignore left/right — they're Enter-activated actions,
+    // not nudgeable values.
     if (bRight) {
       MenuBeep();
-      switch (activeIdx) {
-      case 0: pose.t += 0.1f; if (pose.t < 0.0f) pose.t = 0.0f; break;
-      case 1: pose.posX += 0.5f; break;
-      case 2: pose.posY += 0.5f; break;
-      case 3: pose.posZ += 0.5f; break;
-      case 4: pose.pitch += 1.0f; break;
-      case 5: pose.yaw += 1.0f; break;
-      case 6: pose.roll += 1.0f; break;
-      case 7: pose.fov += 1.0f; if (pose.fov > 130.0f) pose.fov = 130.0f; break;
-      case 8: pose.ease = (EaseType)(((int)pose.ease + 1) % 5); break;
-      case 9: pose.path = (PathType)(((int)pose.path + 1) % 2); break;
-      }
+      if      (activeIdx == IDX_TIME)  { pose.t += 0.1f; if (pose.t < 0.0f) pose.t = 0.0f; }
+      else if (activeIdx == IDX_POSX)  pose.posX += 0.5f;
+      else if (activeIdx == IDX_POSY)  pose.posY += 0.5f;
+      else if (activeIdx == IDX_POSZ)  pose.posZ += 0.5f;
+      else if (activeIdx == IDX_PITCH) pose.pitch += 1.0f;
+      else if (activeIdx == IDX_YAW)   pose.yaw += 1.0f;
+      else if (activeIdx == IDX_ROLL)  pose.roll += 1.0f;
+      else if (activeIdx == IDX_FOV)   { pose.fov += 1.0f; if (pose.fov > 130.0f) pose.fov = 130.0f; }
+      else if (activeIdx == IDX_EASE)  pose.ease = (EaseType)(((int)pose.ease + 1) % 5);
+      else if (activeIdx == IDX_PATH)  pose.path = (PathType)(((int)pose.path + 1) % 2);
       waitTime = 100;
     }
     if (bLeft) {
       MenuBeep();
-      switch (activeIdx) {
-      case 0: pose.t -= 0.1f; if (pose.t < 0.0f) pose.t = 0.0f; break;
-      case 1: pose.posX -= 0.5f; break;
-      case 2: pose.posY -= 0.5f; break;
-      case 3: pose.posZ -= 0.5f; break;
-      case 4: pose.pitch -= 1.0f; break;
-      case 5: pose.yaw -= 1.0f; break;
-      case 6: pose.roll -= 1.0f; break;
-      case 7: pose.fov -= 1.0f; if (pose.fov < 5.0f) pose.fov = 5.0f; break;
-      case 8: pose.ease = (EaseType)(((int)pose.ease + 4) % 5); break;
-      case 9: pose.path = (PathType)(((int)pose.path + 1) % 2); break;
-      }
+      if      (activeIdx == IDX_TIME)  { pose.t -= 0.1f; if (pose.t < 0.0f) pose.t = 0.0f; }
+      else if (activeIdx == IDX_POSX)  pose.posX -= 0.5f;
+      else if (activeIdx == IDX_POSY)  pose.posY -= 0.5f;
+      else if (activeIdx == IDX_POSZ)  pose.posZ -= 0.5f;
+      else if (activeIdx == IDX_PITCH) pose.pitch -= 1.0f;
+      else if (activeIdx == IDX_YAW)   pose.yaw -= 1.0f;
+      else if (activeIdx == IDX_ROLL)  pose.roll -= 1.0f;
+      else if (activeIdx == IDX_FOV)   { pose.fov -= 1.0f; if (pose.fov < 5.0f) pose.fov = 5.0f; }
+      else if (activeIdx == IDX_EASE)  pose.ease = (EaseType)(((int)pose.ease + 4) % 5);
+      else if (activeIdx == IDX_PATH)  pose.path = (PathType)(((int)pose.path + 1) % 2);
       waitTime = 100;
     }
   }

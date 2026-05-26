@@ -252,6 +252,36 @@ static void SQuatToEuler(const SQuat &q, float &pitchOut, float &yawOut,
   }
 }
 
+// Hamilton product. Same maths as the inline composition in
+// EulerToSQuat — extracted here so the entity-rotation-lock paths can
+// build rotations by composing pre-built quats without duplicating it.
+static SQuat QuatMul(const SQuat &a, const SQuat &b) {
+  SQuat r;
+  r.w = a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z;
+  r.x = a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y;
+  r.y = a.w*b.y - a.x*b.z + a.y*b.w + a.z*b.x;
+  r.z = a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w;
+  return r;
+}
+
+// Inverse of a UNIT quaternion is its conjugate. Our quats come from
+// EulerToSQuat which produces unit-length results, so we can skip the
+// /norm step. Used to flip an "object orientation" rotation into the
+// world-to-object frame change needed for the rotation-lock maths.
+static SQuat QuatConj(const SQuat &q) {
+  return {q.w, -q.x, -q.y, -q.z};
+}
+
+// Wrap GTA's ENTITY::GET_ENTITY_ROTATION(entity, 2) — returns a Vector3
+// with .x = pitch, .y = roll, .z = yaw — into the EulerToSQuat
+// convention that the rest of this file uses. Putting the axis re-
+// shuffle in one place avoids accidentally mixing them up at the
+// (lots of) call sites that need an entity's quat.
+static SQuat EntityRotationQuat(int entity) {
+  Vector3 r = ENTITY::GET_ENTITY_ROTATION(entity, 2);
+  return EulerToSQuat(r.x, r.z, r.y);
+}
+
 static SQuat Slerp(SQuat a, SQuat b, float t) {
   float dot = a.w*b.w + a.x*b.x + a.y*b.y + a.z*b.z;
   if (dot < 0.0f) {
@@ -414,6 +444,58 @@ static PoseKeyframe ResolvePose(const CameraSequence *s, int idx,
     p.posX = q.posX; p.posY = q.posY; p.posZ = q.posZ;
     p.pitch = q.pitch; p.yaw = q.yaw; p.roll = q.roll;
     p.fov = q.fov;
+    // Mirror the lock state too so the seam stays anchored to the same
+    // entity as pose[0]. CloseLoop already syncs these for stored poses,
+    // but live cyclic resolution may hit this path before/without a
+    // CloseLoop having run, so do it defensively.
+    p.entityHandle = q.entityHandle;
+    p.localOffsetX = q.localOffsetX;
+    p.localOffsetY = q.localOffsetY;
+    p.localOffsetZ = q.localOffsetZ;
+    p.lockEntPitch = q.lockEntPitch;
+    p.lockEntYaw   = q.lockEntYaw;
+    p.lockEntRoll  = q.lockEntRoll;
+  }
+  // Entity lock: if this keyframe was authored riding along with an
+  // entity that still exists, recompute BOTH its world-space position
+  // and rotation from the stored entity-relative state. We mutate the
+  // returned copy so all downstream consumers (spline tangent calc,
+  // marker preview, linear lerp) treat it uniformly as a world-space
+  // pose. The original world-space fields stored on the keyframe stay
+  // intact on disk — they're the fallback used when the locked entity
+  // is gone (DOES_ENTITY_EXIST returns FALSE for stale or never-existed
+  // handles, so this branch simply skips and the stored coords remain).
+  if (p.entityHandle != 0 && ENTITY::DOES_ENTITY_EXIST(p.entityHandle)) {
+    // Position: GET_OFFSET_FROM_ENTITY_IN_WORLD_COORDS — same native
+    // Free Camera calls each frame for rigid-attach (camera.cpp:627-629).
+    Vector3 w = invoke<Vector3>(0x1899F328B0E12848, p.entityHandle,
+                                p.localOffsetX, p.localOffsetY,
+                                p.localOffsetZ);
+    p.posX = w.x;
+    p.posY = w.y;
+    p.posZ = w.z;
+
+    // Rotation: mirror the additive-Euler-delta approach the free-cam's
+    // rigid mode uses (camera.cpp:634-659). Take the entity's rotation
+    // change since lock time and apply it directly to the keyframe's
+    // stored world Euler. Mapping matches GET_ENTITY_ROTATION(., 2):
+    //   .x = pitch, .y = roll, .z = yaw.
+    Vector3 entNow = ENTITY::GET_ENTITY_ROTATION(p.entityHandle, 2);
+    float dPitch = entNow.x - p.lockEntPitch;
+    float dRoll  = entNow.y - p.lockEntRoll;
+    float dYaw   = entNow.z - p.lockEntYaw;
+    // Shortest-arc wrap so e.g. a car turning from 179° to -179° gives a
+    // 2° delta (not 358°). Matches the wraparound in camera.cpp's
+    // rigid-mode delta tracker.
+    while (dPitch >  180.0f) dPitch -= 360.0f;
+    while (dPitch <= -180.0f) dPitch += 360.0f;
+    while (dRoll  >  180.0f) dRoll  -= 360.0f;
+    while (dRoll  <= -180.0f) dRoll  += 360.0f;
+    while (dYaw   >  180.0f) dYaw   -= 360.0f;
+    while (dYaw   <= -180.0f) dYaw   += 360.0f;
+    p.pitch += dPitch;
+    p.roll  += dRoll;
+    p.yaw   += dYaw;
   }
   return p;
 }
@@ -519,6 +601,16 @@ int Sequence_CloseLoop() {
     last.posX = first.posX; last.posY = first.posY; last.posZ = first.posZ;
     last.pitch = first.pitch; last.yaw = first.yaw; last.roll = first.roll;
     last.fov = first.fov;
+    // Also mirror the entity-lock state so a locked first keyframe's
+    // wrap-around to itself stays anchored to the same entity (otherwise
+    // the seam would drift relative to a moving vehicle).
+    last.entityHandle = first.entityHandle;
+    last.localOffsetX = first.localOffsetX;
+    last.localOffsetY = first.localOffsetY;
+    last.localOffsetZ = first.localOffsetZ;
+    last.lockEntPitch = first.lockEntPitch;
+    last.lockEntYaw   = first.lockEntYaw;
+    last.lockEntRoll  = first.lockEntRoll;
     return (int)s->poses.size() - 1;
   }
 
@@ -674,12 +766,106 @@ void Sequence_JumpToPrevPose() {
   else Sequence_SetCurrentTime(0.0f);
 }
 
+int Sequence_ApplyLockToAll(int entityHandle) {
+  CameraSequence *s = Sequence_Active();
+  if (!s || entityHandle == 0) return 0;
+  if (!ENTITY::DOES_ENTITY_EXIST(entityHandle)) return 0;
+  // Snapshot the entity's rotation ONCE — every keyframe gets the same
+  // lockEntRot. Conceptually: "at this instant, freeze the world<-entity
+  // transform and use it as the basis for all keyframes' lock state".
+  Vector3 entRot = ENTITY::GET_ENTITY_ROTATION(entityHandle, 2);
+  int n = 0;
+  for (PoseKeyframe &p : s->poses) {
+    // Compute local offset from the keyframe's CURRENT stored world
+    // coords. After this call the keyframe rides along with the entity
+    // starting from exactly the position the user already authored.
+    Vector3 local = invoke<Vector3>(
+        0x2274BC1C4885E333, entityHandle, p.posX, p.posY, p.posZ);
+    p.entityHandle = entityHandle;
+    p.localOffsetX = local.x;
+    p.localOffsetY = local.y;
+    p.localOffsetZ = local.z;
+    p.lockEntPitch = entRot.x;
+    p.lockEntRoll  = entRot.y;
+    p.lockEntYaw   = entRot.z;
+    ++n;
+  }
+  return n;
+}
+
+int Sequence_ClearAllLocks() {
+  CameraSequence *s = Sequence_Active();
+  if (!s) return 0;
+  int n = 0;
+  for (PoseKeyframe &p : s->poses) {
+    // Treat "had a handle" OR "has any non-zero offset / lockEntRot" as
+    // locked-ish so the count matches the per-pose editor's hints.
+    bool wasLocked = p.entityHandle != 0 ||
+                     p.localOffsetX != 0.0f || p.localOffsetY != 0.0f ||
+                     p.localOffsetZ != 0.0f ||
+                     p.lockEntPitch != 0.0f || p.lockEntYaw != 0.0f ||
+                     p.lockEntRoll != 0.0f;
+    p.entityHandle = 0;
+    p.localOffsetX = p.localOffsetY = p.localOffsetZ = 0.0f;
+    p.lockEntPitch = p.lockEntYaw = p.lockEntRoll = 0.0f;
+    if (wasLocked) ++n;
+  }
+  return n;
+}
+
+int Sequence_LockedPoseCount() {
+  CameraSequence *s = Sequence_Active();
+  if (!s) return 0;
+  int n = 0;
+  for (const PoseKeyframe &p : s->poses) {
+    if (p.entityHandle != 0 || p.localOffsetX != 0.0f ||
+        p.localOffsetY != 0.0f || p.localOffsetZ != 0.0f ||
+        p.lockEntPitch != 0.0f || p.lockEntYaw != 0.0f ||
+        p.lockEntRoll != 0.0f) ++n;
+  }
+  return n;
+}
+
+void Sequence_CaptureLockForPose(PoseKeyframe &p) {
+  p.entityHandle = 0;
+  p.localOffsetX = p.localOffsetY = p.localOffsetZ = 0.0f;
+  p.lockEntPitch = p.lockEntYaw = p.lockEntRoll = 0.0f;
+  // Resolve the current free-cam follow target. Mode 1 (Player follow)
+  // and mode 2 (Aimed Entity) both produce a usable keyframe anchor —
+  // mode 1 attaches the keyframe to whichever ped the user is
+  // controlling (handy for "track me as I walk"), mode 2 to whatever
+  // they raycasted / picked.
+  int target = 0;
+  if (g_FollowMode == 1) {
+    target = PLAYER::PLAYER_PED_ID();
+  } else if (g_FollowMode == 2 && g_FollowTargetEntity != 0) {
+    target = g_FollowTargetEntity;
+  }
+  if (target == 0 || !ENTITY::DOES_ENTITY_EXIST(target)) return;
+  // GET_OFFSET_FROM_ENTITY_GIVEN_WORLD_COORDS — same native Free Camera
+  // uses to compute the rigid-attach offset (see camera.cpp:613-617).
+  Vector3 local = invoke<Vector3>(0x2274BC1C4885E333, target, p.posX, p.posY,
+                                  p.posZ);
+  p.entityHandle = target;
+  p.localOffsetX = local.x;
+  p.localOffsetY = local.y;
+  p.localOffsetZ = local.z;
+  // Snapshot the entity's rotation at lock time so ResolvePose can derive
+  // the camera's orientation-relative-to-entity each frame. Stored as the
+  // ENTITY's native (pitch, roll, yaw) layout so the round-trip through
+  // EulerToSQuat -> SQuatToEuler stays consistent with EntityRotationQuat.
+  Vector3 entRot = ENTITY::GET_ENTITY_ROTATION(target, 2);
+  p.lockEntPitch = entRot.x;
+  p.lockEntRoll  = entRot.y;
+  p.lockEntYaw   = entRot.z;
+}
+
 int Sequence_CapturePoseAtCurrentTime() {
   CameraSequence *s = EnsureActive();
   float px, py, pz, pitch, yaw, roll;
   GetCameraState(px, py, pz, pitch, yaw, roll);
 
-  PoseKeyframe k;
+  PoseKeyframe k{};
   k.t = s_PlaybackTime;
   // If there's already a pose with this t, nudge so we don't create
   // coincident keyframes (zero-length segment + identical display).
@@ -698,6 +884,10 @@ int Sequence_CapturePoseAtCurrentTime() {
   // ease/path in the per-pose editor.
   k.ease = EASE_LINEAR;
   k.path = PATH_SPLINE;
+  // If free-cam is currently entity-locked, ride along with that entity
+  // during playback too. The world-space pos* values stay populated as a
+  // fallback for the case where the entity no longer exists at playback.
+  Sequence_CaptureLockForPose(k);
   s->poses.push_back(k);
   Sequence_SortByTime();
 
@@ -723,9 +913,20 @@ static void ApplyPoseAtTime(float t, const CameraSequence *s) {
 
   // Single pose: just hold it
   if (s->poses.size() == 1) {
-    const PoseKeyframe &p = s->poses[0];
-    SetCameraStateFromSequence(p.posX, p.posY, p.posZ, p.pitch, p.yaw, p.roll,
-                                p.fov);
+    const PoseKeyframe p = ResolvePose(s, 0, false);
+    // If this lone pose is locked to a live entity, route through the
+    // attach path too — otherwise we'd see lag while the camera sits
+    // on a moving target.
+    if (s->poses[0].entityHandle != 0 &&
+        ENTITY::DOES_ENTITY_EXIST(s->poses[0].entityHandle)) {
+      SetCameraStateFromSequenceLocked(
+          s->poses[0].entityHandle, s->poses[0].localOffsetX,
+          s->poses[0].localOffsetY, s->poses[0].localOffsetZ, p.pitch,
+          p.yaw, p.roll, p.fov);
+    } else {
+      SetCameraStateFromSequence(p.posX, p.posY, p.posZ, p.pitch, p.yaw,
+                                 p.roll, p.fov);
+    }
     return;
   }
 
@@ -822,7 +1023,37 @@ static void ApplyPoseAtTime(float t, const CameraSequence *s) {
 
   float fov = lerpf(a.fov, b.fov, te);
 
-  SetCameraStateFromSequence(px, py, pz, pitch, yaw, roll, fov);
+  // Native-attach when the active segment [i, i+1] is fully locked to
+  // the same entity. The interpolated world coord we computed via the
+  // spline is converted back to the entity's local frame and handed to
+  // the camera driver, which uses ATTACH_CAM_TO_ENTITY for that frame.
+  // The engine then positions the camera at render time (after physics)
+  // instead of from our script-tick world coord — eliminating the one-
+  // frame lag that otherwise looks like jitter on a fast-moving vehicle.
+  //
+  // We require BOTH endpoints locked to the SAME entity. Mixed lock
+  // state means the spline crosses a "world<->entity" boundary; in that
+  // case world-coord SET_CAM_COORD is still the right path (the lag is
+  // unavoidable but the alternative — attach for only part of the
+  // segment — would visibly snap).
+  int segEntity = s->poses[i].entityHandle;
+  if (closed && (i + 1) == N - 1) {
+    // Seam segment: pose[N-1] inherits pose[0]'s lock per ResolvePose.
+    if (s->poses[0].entityHandle != segEntity) segEntity = 0;
+  } else if (i + 1 < N) {
+    if (s->poses[i + 1].entityHandle != segEntity) segEntity = 0;
+  } else {
+    segEntity = 0;
+  }
+  if (segEntity != 0 && ENTITY::DOES_ENTITY_EXIST(segEntity)) {
+    // Convert the spline result back into the entity's local frame so
+    // the camera driver can attach with this offset.
+    Vector3 local = invoke<Vector3>(0x2274BC1C4885E333, segEntity, px, py, pz);
+    SetCameraStateFromSequenceLocked(segEntity, local.x, local.y, local.z,
+                                     pitch, yaw, roll, fov);
+  } else {
+    SetCameraStateFromSequence(px, py, pz, pitch, yaw, roll, fov);
+  }
 }
 
 // ============================================================
@@ -971,10 +1202,13 @@ void Sequence_EnterMode() {
   if (!g_FreeCamActive) {
     InitFreeCamera();
   }
-  // Disable HUD by default (consistent with Free Camera) and detach any
-  // follow / drone state that would fight playback.
-  g_FollowMode = 0;
-  g_FollowTargetEntity = 0;
+  // Drone mode is incompatible with keyframe authoring (it owns its own
+  // physics-driven position state). Free-cam's follow mode, on the other
+  // hand, is exactly what we want available while authoring — locking the
+  // camera to a vehicle / ped while flying around composes naturally with
+  // capturing keyframes that ride along with that entity. Sequence_Tick
+  // never runs UpdateFreeCamera during playback (only when !s_Playing),
+  // so the follow logic can't fight the playback driver.
   g_DroneMode = false;
 }
 
@@ -1102,13 +1336,19 @@ static void DrawSequenceMarkers() {
   //  - loop seam (closed && i == 0): cyan, larger — the merged endpoint
   //  - editing (s_EditingPoseIdx == i): bright magenta — the menu's open
   //  - current (closest to scrub): yellow-green — playback "you are here"
+  //  - locked to entity (live): teal — rides along with the anchor entity
   //  - normal: dim olive
-  // Editing wins over current when both apply. When the loop is closed,
+  // Editing wins over current wins over locked. When the loop is closed,
   // we skip the duplicate last keyframe's marker entirely (it would draw
   // on top of pose[0]) — pose[0] gets the cyan "Loop ⟲" treatment instead.
   for (int i = 0; i < N; ++i) {
     if (closed && i == N - 1) continue; // duplicate of pose[0]; rendered there
-    const PoseKeyframe &p = s->poses[i];
+    // ResolvePose recomputes the world-space coords from the entity-
+    // relative offset when the keyframe is locked and its entity still
+    // exists. That way the marker (and the orientation arrow + label
+    // anchored to it) ride along with the locked entity, matching what
+    // playback will actually do.
+    const PoseKeyframe p = ResolvePose(s, i, closed);
     bool isEditing = (i == s_EditingPoseIdx);
     bool isCurrent = hasCurrent &&
                      (i == currentIdx ||
@@ -1118,12 +1358,15 @@ static void DrawSequenceMarkers() {
                       // the seam.
                       (closed && i == 0 && currentIdx == N - 1));
     bool isSeam = closed && i == 0;
+    bool isLockedLive = p.entityHandle != 0 &&
+                        ENTITY::DOES_ENTITY_EXIST(p.entityHandle);
     int r, g, b;
     float size;
-    if (isEditing)      { r = 255; g =   0; b = 255; size = 0.55f; }
-    else if (isCurrent) { r = 255; g = 220; b =   0; size = 0.45f; }
-    else if (isSeam)    { r =   0; g = 220; b = 255; size = 0.45f; }
-    else                { r =  80; g = 200; b =  80; size = 0.30f; }
+    if (isEditing)         { r = 255; g =   0; b = 255; size = 0.55f; }
+    else if (isCurrent)    { r = 255; g = 220; b =   0; size = 0.45f; }
+    else if (isSeam)       { r =   0; g = 220; b = 255; size = 0.45f; }
+    else if (isLockedLive) { r =  60; g = 180; b = 200; size = 0.32f; }
+    else                   { r =  80; g = 200; b =  80; size = 0.30f; }
     int a = s_Playing ? 90 : 200;
     if (isEditing) a = 230; // always vivid so the editor target is unmistakable
     if (isSeam && !s_Playing) a = 230;
@@ -1142,10 +1385,12 @@ static void DrawSequenceMarkers() {
                         p.posX + dx * arrowLen, p.posY + dy * arrowLen,
                         p.posZ + dz * arrowLen, r, g, b, a);
     // Label above the marker. Seam pose gets the "Loop" tag so the user
-    // can see at a glance which sequences are closed.
+    // can see at a glance which sequences are closed. Locked poses get a
+    // small chain glyph so locks are visible at a glance in the world.
     char poseLabel[32];
-    if (isSeam) sprintf_s(poseLabel, "KF 0 / Loop");
-    else        sprintf_s(poseLabel, "KF %d", i);
+    const char *lockTag = isLockedLive ? " [L]" : "";
+    if (isSeam) sprintf_s(poseLabel, "KF 0 / Loop%s", lockTag);
+    else        sprintf_s(poseLabel, "KF %d%s", i, lockTag);
     int la = s_Playing ? 140 : 230;
     DrawText3D(p.posX, p.posY, p.posZ + 0.5f, poseLabel, r, g, b, la, 0.32f);
   }
@@ -1324,9 +1569,11 @@ static void GetSequencesIniPath(char *outPath, size_t bufSize) {
 
 static void ParsePose(const char *line, PoseKeyframe &p) {
   // Format: t=X,x=X,y=X,z=X,pitch=X,yaw=X,roll=X,fov=X,ease=N,path=N
+  //         [,locked=1,locX=F,locY=F,locZ=F]    (entity lock fields, optional)
   p = PoseKeyframe{};
   p.ease = EASE_LINEAR;
   p.path = PATH_LINEAR;
+  bool hadLockFlag = false;
   char buf[512]; strncpy_s(buf, sizeof(buf), line, _TRUNCATE);
   char *ctx = nullptr;
   for (char *tok = strtok_s(buf, ",", &ctx); tok; tok = strtok_s(nullptr, ",", &ctx)) {
@@ -1345,7 +1592,31 @@ static void ParsePose(const char *line, PoseKeyframe &p) {
     else if (!strcmp(k, "fov"))   p.fov = (float)atof(v);
     else if (!strcmp(k, "ease"))  p.ease = (EaseType)atoi(v);
     else if (!strcmp(k, "path"))  p.path = (PathType)atoi(v);
+    // Entity lock: 'locked' is a flag (1 when the keyframe was authored
+    // with a live entity lock). The handle itself is NOT serialized —
+    // GTA entity handles are session-scoped, so a stored handle from a
+    // previous session would either be invalid OR (worse) collide with
+    // an unrelated entity. Always set handle to 0 on load; the local
+    // offset + entity rotation snapshot are preserved so the user could
+    // manually relock to a similar entity later. While handle=0 the
+    // playback path falls through to the world-space fallback (which is
+    // the right behavior).
+    else if (!strcmp(k, "locked")) hadLockFlag = (atoi(v) != 0);
+    else if (!strcmp(k, "locX"))   p.localOffsetX = (float)atof(v);
+    else if (!strcmp(k, "locY"))   p.localOffsetY = (float)atof(v);
+    else if (!strcmp(k, "locZ"))   p.localOffsetZ = (float)atof(v);
+    // Entity rotation at lock time (matches the ENTITY::GET_ENTITY_ROTATION
+    // (entity, 2) layout: pitch, roll, yaw).
+    else if (!strcmp(k, "lEntP"))  p.lockEntPitch = (float)atof(v);
+    else if (!strcmp(k, "lEntY"))  p.lockEntYaw   = (float)atof(v);
+    else if (!strcmp(k, "lEntR"))  p.lockEntRoll  = (float)atof(v);
   }
+  // Keep entityHandle at 0 on load regardless of the locked flag — see
+  // comment above. If hadLockFlag is true we still cleared the handle;
+  // it just means the offset values are meaningful and the menu can
+  // surface "Lock to current entity" as a one-click way to re-anchor.
+  (void)hadLockFlag;
+  p.entityHandle = 0;
 }
 
 static void ParseEvent(const char *line, EffectEvent &e) {
@@ -1366,10 +1637,21 @@ static void ParseEvent(const char *line, EffectEvent &e) {
 }
 
 static void FormatPose(const PoseKeyframe &p, char *out, size_t bufSize) {
-  sprintf_s(out, bufSize,
+  int n = sprintf_s(out, bufSize,
             "t=%.3f,x=%.3f,y=%.3f,z=%.3f,pitch=%.3f,yaw=%.3f,roll=%.3f,fov=%.3f,ease=%d,path=%d",
             p.t, p.posX, p.posY, p.posZ, p.pitch, p.yaw, p.roll, p.fov,
             (int)p.ease, (int)p.path);
+  // Only append the lock fields when the keyframe is currently locked.
+  // Keeps older sequences round-trip-identical and avoids cluttering
+  // saved sequences that never used entity lock. See ParsePose for the
+  // load-side handling of these fields.
+  if (n > 0 && p.entityHandle != 0) {
+    sprintf_s(out + n, bufSize - n,
+              ",locked=1,locX=%.3f,locY=%.3f,locZ=%.3f"
+              ",lEntP=%.3f,lEntY=%.3f,lEntR=%.3f",
+              p.localOffsetX, p.localOffsetY, p.localOffsetZ,
+              p.lockEntPitch, p.lockEntYaw, p.lockEntRoll);
+  }
 }
 
 static void FormatEvent(const EffectEvent &e, char *out, size_t bufSize) {

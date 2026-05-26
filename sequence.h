@@ -64,6 +64,40 @@ struct PoseKeyframe {
   float fov;
   EaseType ease;
   PathType path;
+  // Entity lock (mirrors Free Camera's follow-target system).
+  //
+  // When `entityHandle != 0` AND the entity still exists at playback time,
+  // the world-space `pos*` fields are treated as a fallback and the real
+  // playback position is computed each frame as
+  // GET_OFFSET_FROM_ENTITY_IN_WORLD_COORDS(entityHandle, localOffset*).
+  // That makes the keyframe ride along with a moving vehicle or ped just
+  // like the free-cam's rigid follow mode.
+  //
+  // Handles are session-scoped — on INI load we always reset entityHandle
+  // to 0 (a stored handle from a previous session would either be invalid
+  // or, worse, collide with an unrelated entity). The local offset is
+  // still persisted so the user could re-lock to the same kind of entity
+  // mid-session without losing the captured relative position.
+  //
+  // Rotation lock works the same way as position lock:
+  //
+  //   - At lock time we snapshot the entity's WORLD rotation into
+  //     lockEntPitch/Yaw/Roll. The keyframe's own pitch/yaw/roll keep
+  //     their world meaning (the camera orientation at capture).
+  //   - At playback ResolvePose computes:
+  //         localQ = inverse(lockEntQ) * camWorldQ_at_capture
+  //         worldQ_now = entQ_now * localQ
+  //     and writes the recomposed world Euler back into the returned
+  //     PoseKeyframe copy. The spline / linear interpolator downstream
+  //     never has to know rotation is locked.
+  //
+  // Storing world-at-capture (rather than baked local Eulers) keeps the
+  // menu's pitch/yaw/roll display intuitive — it always shows where
+  // the camera was actually looking — and clearing the lock leaves
+  // those fields meaningful without any reverse-transform.
+  int entityHandle;
+  float localOffsetX, localOffsetY, localOffsetZ;
+  float lockEntPitch, lockEntYaw, lockEntRoll;
 };
 
 struct EffectEvent {
@@ -136,6 +170,42 @@ void Sequence_JumpToPrevPose();
 // current scrub time (or at sequence end if no scrub). Returns the
 // index of the inserted keyframe in the active sequence's pose list.
 int Sequence_CapturePoseAtCurrentTime();
+
+// Capture the current free-cam entity-lock state (g_FollowMode == 2 +
+// g_FollowTargetEntity) into the keyframe, given its world-space
+// position. If no entity is currently locked, clears the keyframe's
+// lock fields. Used by capture / recapture paths so the keyframe's
+// "ride along with this entity" state matches what the camera is
+// doing right now. Only the "Aimed Entity" follow mode counts —
+// Player follow is intentionally ignored (locking keyframes to the
+// controlled ped is rarely what the user wants).
+void Sequence_CaptureLockForPose(PoseKeyframe &p);
+
+// Batch operations on every keyframe of the active sequence.
+//
+// ApplyLockToAll: take an entity handle (typically g_FollowTargetEntity)
+// and re-anchor every keyframe to it. The entity-local offset is computed
+// per keyframe from its stored world-space coords, so each keyframe keeps
+// its original world position at the moment of binding — the entity then
+// drags them along during playback. Pass 0 to no-op. Returns the number
+// of keyframes updated.
+//
+// ClearAllLocks: drop the lock from every keyframe in the active
+// sequence. World-space coords are left intact, so playback continues
+// to work with the stored positions. Returns the number cleared.
+//
+// Both are intended for the Sequence menu's "Follow & Entity Lock"
+// submenu — they let the user bulk-re-anchor a previously-locked
+// sequence after loading from disk (where handles are deliberately
+// dropped), or wipe locks in one click before saving a "world-space
+// only" version.
+int Sequence_ApplyLockToAll(int entityHandle);
+int Sequence_ClearAllLocks();
+
+// Count of keyframes in the active sequence that currently have an
+// entity-lock binding (live or authored-but-stale). Useful for the
+// follow submenu's status display.
+int Sequence_LockedPoseCount();
 
 // Active sequence accessors (the one being edited/played)
 CameraSequence *Sequence_Active();

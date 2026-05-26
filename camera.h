@@ -107,6 +107,22 @@ extern bool g_SequencePlaybackActive;
 void SetCameraStateFromSequence(float posX, float posY, float posZ,
                                 float pitch, float yaw, float roll, float fov);
 
+// Locked-segment variant of SetCameraStateFromSequence. When the current
+// playback segment is anchored to a single entity (both endpoint
+// keyframes locked to the same handle), the sequence driver computes
+// the camera's position as an entity-local offset and hands it here.
+// SequencePushToEngine then binds the camera to the entity via
+// ATTACH_CAM_TO_ENTITY instead of writing world coords each frame —
+// eliminating the one-frame lag inherent in script-driven SET_CAM_COORD
+// on a moving entity (the same trick free-cam's rigid follow uses).
+//
+// The world coord is also written so shake / world-only fallback have
+// a fresh value; the attachment overrides at render time.
+void SetCameraStateFromSequenceLocked(int entity, float localOffsetX,
+                                      float localOffsetY, float localOffsetZ,
+                                      float pitch, float yaw, float roll,
+                                      float fov);
+
 // Push the current s_Pos* / s_Pitch / s_Yaw / g_CamRoll / g_CamFOV state to
 // the scripted camera (CAM::SET_CAM_COORD / SET_CAM_ROT / FOV). Called by
 // the sequence tick after writing state. `dt` is the per-frame delta in

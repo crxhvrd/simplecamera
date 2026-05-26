@@ -19,6 +19,7 @@ A professional camera and world-control suite for Grand Theft Auto V. Built for 
   - **Cubic Hermite splines** — velocity stays C1-continuous through every keyframe, even with mixed segment durations
   - **5 ease curves** — Linear, EaseInOut, EaseIn, EaseOut, Hold
   - **Seamless loop closure** — when first and last keyframes align, playback wraps with no snap and no velocity jerk
+  - **Entity lock** — anchor keyframes to a moving vehicle or ped; the whole camera arc rides along with full position + rotation rigidity. Lag-free via native camera attachment during locked playback.
   - **Effect events** — scheduled shake changes, randomize triggers, and `World Speed` slow-mo / bullet-time
   - **F6 / F7 / F8 / F9 hotkeys** — capture, play, stop, jump to next keyframe
   - **In-world markers + path preview** — see your camera trajectory live in the world
@@ -51,6 +52,7 @@ A professional camera and world-control suite for Grand Theft Auto V. Built for 
   - [Sequence Menu Reference](#sequence-menu-reference)
   - [Pose Keyframes](#pose-keyframes)
   - [Effect Events](#effect-events)
+  - [Entity Lock & Follow](#entity-lock--follow)
   - [Loop Closure](#loop-closure)
   - [Slow-Motion with World Speed](#slow-motion-with-world-speed)
   - [In-World Visualization](#in-world-visualization)
@@ -315,8 +317,14 @@ The typical session:
 | **Delete Active Sequence** | Removes the currently selected sequence. |
 | **Save All to INI** | Writes all sequences to `SimpleCamera_Sequences.ini`. |
 | **Close Loop** | Snaps the last keyframe to match the first, or appends a closing keyframe. See [Loop Closure](#loop-closure). |
+| **Follow & Entity Lock…** | Opens the [Entity Lock & Follow](#entity-lock--follow) submenu. Value column shows the current follow target + locked-keyframe count at a glance. |
 | **Show Markers** | Toggles in-world keyframe visualization (the colored spheres + path lines). |
+| **Hide HUD** | Hides the in-game HUD / radar. Mirrors the Free Camera *Misc Settings* toggle so you can clean the viewport without leaving Sequence mode. |
+| **Hide Player Character** | Renders the player ped invisible. Toggle off when authoring sequences locked to the player ped so you can see it in frame. |
 | **Exit** | Returns to the mode picker. |
+
+> [!NOTE]
+> The Sequence main menu has more rows than the on-screen viewport (12 visible). It **scrolls automatically** as you move the cursor — the title bar shows `[X-Y / total]` so you can tell what's off-screen.
 
 ### Pose Keyframes
 
@@ -334,7 +342,8 @@ Selecting a keyframe opens its per-pose editor with these fields:
 | **FOV** | Field of view at this keyframe. |
 | **Ease** | Curve shape entering this keyframe. See ease types below. |
 | **Path** | Linear (straight-line) or Spline (Hermite curve). See path types below. |
-| **Recapture from live** | Overwrites this keyframe's pos/rot/FOV with the current camera state. Useful for tweaking — fly to where you want, hit Enter. |
+| **Entity Lock** | Press Enter to toggle. If unlocked and free-cam is currently following an entity (Player or Aimed), captures the lock onto that entity. If locked, releases. See [Entity Lock & Follow](#entity-lock--follow). Reads `Locked`, `Locked (entity gone)`, `Authored locked` (from a saved sequence — entity handles don't survive reloads), or `None`. |
+| **Recapture from live** | Overwrites this keyframe's pos/rot/FOV with the current camera state *and* the current free-cam lock state. Useful for tweaking — fly to where you want, hit Enter. |
 | **Delete** | Removes this keyframe. |
 
 #### Ease types
@@ -396,6 +405,55 @@ A parallel track of events that fire at specific timeline positions, independent
 > [!NOTE]
 > A snapshot of your authoring-time shake config is captured the moment **Play** starts. On **Stop** or end-of-playback, the original config is restored — so events scoped to the sequence don't leak into free-fly state.
 
+### Entity Lock & Follow
+
+> Menu: Sequence → **Follow & Entity Lock…**
+
+Anchors keyframes to a moving entity (vehicle, ped, or object) so the entire camera arc rides along with it during playback. Designed for tracking shots — orbit a driving car, follow a walking ped, ride along with a flying jet — without rebuilding the sequence every time the subject moves.
+
+**Mental model**
+
+- Each keyframe optionally stores an **entity-local offset** (X, Y, Z) and an **entity rotation snapshot** at lock time.
+- During playback, `ResolvePose` recomputes each control point's world position from `entity_current_position + rotated(localOffset)` every frame. Spline interpolation then runs on the live-resolved world coords.
+- Rotation rides along via the **same additive-Euler-delta math** that Free Camera's rigid follow uses: `(pitch, yaw, roll) += (entity_rotation_now − lockEntRot)`.
+- When both endpoints of a spline segment lock to the same entity, the driver uses GTA's native `ATTACH_CAM_TO_ENTITY` for position — eliminating the one-frame lag that `SET_CAM_COORD` exhibits on a fast-moving target. Lag-free tracking, same as free-cam rigid mode.
+
+**The submenu**
+
+| Row | Behavior |
+| :--- | :--- |
+| **Follow Target** | Cycle None / Player / Aimed Entity with Left/Right or Enter. Drives the same `g_FollowMode` as the free-cam menu. |
+| **Lock Entity (raycast)** | *(Aimed only)* Fires a 1000 m ray from camera; locks onto whatever ped/vehicle/object is at center-screen. A white hover marker shows the candidate as you aim. Enter again to release. |
+| **Lock to Nearest Vehicle** | *(Aimed only)* Foolproof fallback — `GET_CLOSEST_VEHICLE` within 30 m. Works even when the raycast misses (e.g. camera inside the target's collision volume on a close-up shot). |
+| **Lock to Player's Vehicle** | *(Aimed only, when player is in a vehicle)* One-click "lock to the car I'm driving". |
+| **Rigid Mode** | *(when locked)* Affects free-cam authoring — camera rotates with the entity while you compose. |
+| **Show Marker** | *(when locked)* Draws a green marker above the locked entity so you can spot it in the world. |
+| **Apply Lock to All Keyframes** | Re-anchors every keyframe in the active sequence to the current free-cam target. Each keyframe's local offset is computed from its stored world coords, so authored positions are preserved at the moment of binding. |
+| **Clear All Keyframe Locks** | Drops the lock from every keyframe. World-space coords are preserved as fallback playback. |
+| **Bake Locked Poses to World** | For every locked keyframe whose entity is live, writes the current world position into the keyframe's fallback. Pair with *Clear All Locks* for a permanent bake of the current arrangement. |
+
+**Per-keyframe lock**
+
+Open any keyframe in **Pose Keyframes** → the editor has an **Entity Lock** row. Enter toggles a single keyframe's lock without affecting the rest. Useful for sequences that mix locked tracking shots with static world-space shots.
+
+**Authoring a tracking shot**
+
+1. Free-cam → aim at the subject → lock the entity (or get in the vehicle, switch to Sequence mode, set Follow Target = Player).
+2. Switch to **Camera Sequence** mode. The lock state carries over.
+3. Fly the camera relative to the locked subject and press F6 at each spot — each keyframe captures both world coords *and* the entity-local offset / entity rotation snapshot.
+4. Either capture all keyframes while locked, or capture them unlocked first and use **Apply Lock to All Keyframes** once you're happy with the world-space layout.
+5. Play. The entire camera arc rides with the subject.
+
+**Persistence notes**
+
+- Saved sequences round-trip the offset + entity rotation snapshot through the INI. The **entity handle itself is NOT persisted** — GTA entity handles are session-scoped, so a stored handle would either be invalid or (worse) collide with an unrelated entity.
+- On load, locked keyframes appear as `Authored locked` in the editor. To make them ride along again in this session, use **Apply Lock to All Keyframes** (or the per-keyframe Entity Lock toggle) to bind them to a current entity.
+- If the locked entity is destroyed mid-playback, playback automatically falls through to the stored world-space coords — no crash, no jarring snap.
+
+**The rigid-rotation trade-off**
+
+When position is locked via native attach, GTA's procedural position-shake offsets are ignored (the engine owns position). Rotation shake still works. For a deliberately rigid tracking shot this is the right call — you usually don't want a "handheld jitter" component fighting a locked rig.
+
 ### Loop Closure
 
 When the active sequence has `Loop = On` AND its first and last keyframes are within tolerance (default **1 m / 5° / 2° FOV**), the editor automatically enters **closed-loop mode**:
@@ -434,12 +492,13 @@ The `World Speed` effect-event kind drives the game's `SET_TIME_SCALE` native. U
 
 While in Sequence mode (toggle via *Show Markers*):
 
-- Each keyframe renders as a colored sphere with a short arrow indicating its facing direction and a `KF N` label.
+- Each keyframe renders as a colored sphere with a short arrow indicating its facing direction and a `KF N` label. Locked keyframes carry an `[L]` suffix on the label and **ride along with the entity** as it moves — the in-world markers reflect playback truth.
 - **Color codes:**
   - **Magenta** — keyframe currently open in the editor.
   - **Yellow-green** — closest to the playback scrub position ("you are here").
   - **Cyan** — loop seam (when closed-loop mode is active).
-  - **Olive** — normal keyframe.
+  - **Teal** — keyframe locked to a live entity (ride-along).
+  - **Olive** — normal world-space keyframe.
 - The full camera path renders as a polyline; spline segments are tessellated so what you see matches what playback will do.
 - **Effect events** project onto the path at their scheduled time with a compact label:
   - `Amp:0.40` — snap event.
@@ -600,6 +659,7 @@ Speed=1.0000
 PoseCount=4
 Pose0=t=0.000,x=100.5,y=200.3,z=30.0,pitch=0,yaw=90,roll=0,fov=50,ease=0,path=1
 Pose1=t=2.000,x=110.5,y=200.3,z=35.0,pitch=-10,yaw=90,roll=0,fov=45,ease=1,path=1
+Pose2=t=4.000,x=120.5,y=200.3,z=35.0,pitch=-10,yaw=90,roll=0,fov=45,ease=1,path=1,locked=1,locX=2.500,locY=-3.000,locZ=1.200,lEntP=0.000,lEntY=180.000,lEntR=0.000
 ...
 EventCount=2
 Event0=t=1.000,kind=10,value=0.500,ramp=1
@@ -607,6 +667,14 @@ Event1=t=3.000,kind=10,value=1.000,ramp=1
 ```
 
 One `[Sequence:Name]` section per sequence. Hand-editable if you need surgical control or want to programmatically generate sequences.
+
+**Pose lock fields** (only present when the keyframe was authored with an entity lock):
+
+- `locked=1` — flag indicating the keyframe was bound to an entity at authoring time.
+- `locX,locY,locZ` — the camera's offset relative to the entity, in the entity's local frame.
+- `lEntP,lEntY,lEntR` — the entity's world pitch / yaw / roll at lock time, used as the reference for the per-frame rotation delta during playback.
+
+The **entity handle itself is intentionally NOT serialized** — GTA assigns handles per-session, so a saved handle would either be invalid or (worse) collide with an unrelated entity on load. After loading, the keyframe shows as *Authored locked* in the editor; bind it to a current entity via the Follow & Entity Lock submenu.
 
 > [!CAUTION]
 > Effect-event IDs were renumbered when shake replaced DoF/time/weather event kinds. Sequences saved with very old builds may have legacy events labeled `(legacy)` in the editor — delete them or remap their kind in the per-event submenu.
@@ -644,6 +712,16 @@ One `[Sequence:Name]` section per sequence. Hand-editable if you need surgical c
 4. *Stop When Still* ON — so the shake settles when you stop moving.
 5. Fly slowly through your scene.
 
+### Tracking shot from a moving vehicle
+
+1. **Camera Sequence** mode. Park the subject vehicle where you want the shot to start.
+2. Open **Follow & Entity Lock…**
+3. Either *Lock to Player's Vehicle* (one click if you're driving) or set Follow Target = *Aimed Entity* + *Lock to Nearest Vehicle*.
+4. Fly the free-cam around the static car and press **F6** at each spot — the orbit, the over-the-shoulder, the side-tracking, etc. Each keyframe captures both world coords *and* the entity-relative offset.
+5. *(Optional)* Hit **Apply Lock to All Keyframes** if you captured any before locking, to bind the full set in one shot.
+6. *(Optional)* Toggle **Hide Player Character = OFF** if the ped should be visible in frame.
+7. Press F7 to play, then start driving the car (or have a trainer autodrive it). The entire camera arc rides along with the vehicle — perfect framing through turns, accelerations, jumps.
+
 ### Time-lapse sunrise
 
 1. **Time & weather** → set Time of Day to 05:30.
@@ -665,6 +743,9 @@ One `[Sequence:Name]` section per sequence. Hand-editable if you need surgical c
 - **FiveM server kicked me** — Disable *Freeze Entire World*, *Time-of-Day*, and weather overrides while connected. Some servers are strict about engine-state mutations.
 - **Sequence won't save** — Check that the game has write access to its install directory (Steam-installed games are usually fine; Microsoft Store / WSL installs may need permissions adjusted).
 - **IGCS not connecting** — Ensure ReShade has *full Add-on support* enabled (the installer asks; default is "no"). The plugin polls for the addon — if it's loaded after the game starts, give it a few seconds.
+- **Locked sequence shakes / lags on a moving car** — Make sure BOTH adjacent keyframes are locked to the SAME entity. The lag-free native-attach path only kicks in for fully-locked segments; mixed lock states fall back to script-driven `SET_CAM_COORD` which has a one-frame lag relative to entity physics.
+- **Locked keyframes lost after reloading a sequence** — Expected: entity handles are session-scoped and never persisted to disk (a stored handle could collide with an unrelated entity). Re-bind via *Follow & Entity Lock → Apply Lock to All Keyframes* once you have an entity to anchor to.
+- **Lock-to-Entity raycast keeps saying "No entity found"** — The camera is probably inside the target's collision volume. Either fly back a few meters, or use *Lock to Nearest Vehicle* / *Lock to Player's Vehicle* which don't depend on the raycast.
 
 ---
 
@@ -705,7 +786,9 @@ Output: `bin\Release\SimpleCamera.asi`. Drop into your game folder.
 - **Spline math** lives in `HermiteSpline1D` (time-aware) and `unwrapAngle` (shortest-arc rotation across the ±180° seam).
 - **Loop closure** is computed at runtime (`IsLoopClosedImpl`) from `loop=true` + first/last proximity within hardcoded tolerances (1 m / 5° / 2° FOV). Tolerances are at the top of `sequence.cpp` (`kLoopPosTolerance` etc.) if you want to tune them.
 - **World Speed snapshot** uses a session-scoped flag (`s_WorldSpeedTouched`) — only restores `SET_TIME_SCALE` to 1.0× if the sequence actually fired a World Speed event, preserving external time-scale state otherwise.
-- **List menu scrolling** is handled by `EnsureRowVisible(activeIdx, lineCount, scrollOffset)` — idempotent, called once per frame before rendering. Cap is `kMaxVisibleListRows = 12`.
+- **List menu scrolling** is handled by `EnsureRowVisible(activeIdx, lineCount, scrollOffset)` — idempotent, called once per frame before rendering. Cap is `kMaxVisibleListRows = 12`. Used by Pose Keyframes, Effect Events, Movement Settings, and the Sequence main menu.
+- **Entity lock** stores per-keyframe `entityHandle` + `localOffsetX/Y/Z` + `lockEntPitch/Yaw/Roll` (camera-relative-to-entity reference). `ResolvePose` is the single resolution point: when the keyframe's entity is live, it overwrites the returned copy's pos with `GET_OFFSET_FROM_ENTITY_IN_WORLD_COORDS(...)` and adds the entity's rotation delta to pitch/yaw/roll. The spline interpolator downstream is oblivious to the lock — it just sees world-resolved coords.
+- **Native-attach during locked playback** — when both endpoints of the active segment lock to the same entity, `ApplyPoseAtTime` converts the spline result back into entity-local space via `GET_OFFSET_FROM_ENTITY_GIVEN_WORLD_COORDS` and calls `SetCameraStateFromSequenceLocked`. `SequencePushToEngine` then uses `ATTACH_CAM_TO_ENTITY` instead of `SET_CAM_COORD`, so the camera position is bound at render time (after physics) — eliminating the one-frame lag inherent in script-driven coord pushes on fast-moving entities.
 
 ---
 
