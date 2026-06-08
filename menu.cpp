@@ -9,6 +9,7 @@
 
 #include "menu.h"
 #include "camera.h"
+#include "fx_capture.h"
 #include "keyboard.h"
 #include "sequence.h"
 
@@ -23,6 +24,10 @@
 
 static std::string s_StatusText;
 static DWORD s_StatusTextMaxTicks = 0;
+
+// Set while any configuration menu is open (see camera.h). UpdateFreeCamera
+// reads this to suppress menu-shared controller input (D-Pad zoom).
+bool g_MenuOpen = false;
 
 void SetStatusText(std::string str, DWORD time) {
   s_StatusText = str;
@@ -50,26 +55,206 @@ void UpdateStatusText() {
 
 static int g_MenuKey = VK_F5; // default
 
-void LoadSettings() {
-  // Build path to INI file next to the ASI
-  char path[MAX_PATH];
+// Resolve the full path to SimpleCamera.ini sitting next to the ASI. Single
+// source of truth for both load and save so they can never disagree.
+static void GetIniPath(char *path, size_t cap) {
   HMODULE hMod = NULL;
   GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
                          GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                     (LPCSTR)LoadSettings, &hMod);
-  GetModuleFileNameA(hMod, path, MAX_PATH);
-
-  // Replace filename with SimpleCamera.ini
+                     (LPCSTR)GetIniPath, &hMod);
+  GetModuleFileNameA(hMod, path, (DWORD)cap);
   char *last = strrchr(path, '\\');
   if (last)
-    strcpy_s(last + 1, MAX_PATH - (last + 1 - path), "SimpleCamera.ini");
+    strcpy_s(last + 1, cap - (last + 1 - path), "SimpleCamera.ini");
+}
 
+// GetPrivateProfileInt stores ints only; floats need string round-tripping.
+static float IniReadFloat(const char *section, const char *key, float def,
+                          const char *path) {
+  char buf[64], defbuf[64];
+  sprintf_s(defbuf, "%g", def);
+  GetPrivateProfileStringA(section, key, defbuf, buf, sizeof(buf), path);
+  return (float)atof(buf);
+}
+
+static bool IniReadBool(const char *section, const char *key, bool def,
+                        const char *path) {
+  return GetPrivateProfileIntA(section, key, def ? 1 : 0, path) != 0;
+}
+
+void LoadSettings() {
+  char path[MAX_PATH];
+  GetIniPath(path, MAX_PATH);
+
+  // ---- Controls ----
   g_MenuKey = GetPrivateProfileIntA("Controls", "MenuKey", VK_F5, path);
   // Camera Sequence hotkeys — inert outside Sequence mode.
   g_SeqHotkeyAdd = GetPrivateProfileIntA("Controls", "SequenceAddKey", VK_F6, path);
   g_SeqHotkeyPlay = GetPrivateProfileIntA("Controls", "SequencePlayKey", VK_F7, path);
   g_SeqHotkeyStop = GetPrivateProfileIntA("Controls", "SequenceStopKey", VK_F8, path);
   g_SeqHotkeyNext = GetPrivateProfileIntA("Controls", "SequenceNextKey", VK_F9, path);
+
+  // ---- Camera ---- (defaults match the global initializers in camera.cpp)
+  g_CamSpeed = IniReadFloat("Camera", "CamSpeed", g_CamSpeed, path);
+  g_CamSensitivity = IniReadFloat("Camera", "CamSensitivity", g_CamSensitivity, path);
+  g_CamFOV = IniReadFloat("Camera", "CamFOV", g_CamFOV, path);
+  g_ZoomSpeed = IniReadFloat("Camera", "ZoomSpeed", g_ZoomSpeed, path);
+  g_RollSpeed = IniReadFloat("Camera", "RollSpeed", g_RollSpeed, path);
+  g_CamCollision = IniReadBool("Camera", "Collision", g_CamCollision, path);
+  g_LockHeight = IniReadBool("Camera", "LockHeight", g_LockHeight, path);
+  g_RotationEngine = IniReadBool("Camera", "AcrobaticRotation", g_RotationEngine, path);
+  g_WalkMode = IniReadBool("Camera", "WalkMode", g_WalkMode, path);
+  g_WalkHeight = IniReadFloat("Camera", "WalkHeight", g_WalkHeight, path);
+  g_FollowRigidMode = IniReadBool("Camera", "FollowRigidMode", g_FollowRigidMode, path);
+
+  // ---- Drone ----
+  g_DroneMode = IniReadBool("Drone", "Enabled", g_DroneMode, path);
+  g_DroneDrag = IniReadFloat("Drone", "Drag", g_DroneDrag, path);
+  g_DroneAcceleration = IniReadFloat("Drone", "Acceleration", g_DroneAcceleration, path);
+  g_DroneGravity = IniReadFloat("Drone", "Gravity", g_DroneGravity, path);
+  g_DroneBanking = IniReadFloat("Drone", "Banking", g_DroneBanking, path);
+  g_DroneRotSmoothing = IniReadFloat("Drone", "RotSmoothing", g_DroneRotSmoothing, path);
+  g_DroneFovSmoothing = IniReadFloat("Drone", "FovSmoothing", g_DroneFovSmoothing, path);
+
+  // ---- Shake ----
+  g_ShakeEnabled = IniReadBool("Shake", "Enabled", g_ShakeEnabled, path);
+  g_ShakePreset = GetPrivateProfileIntA("Shake", "Preset", g_ShakePreset, path);
+  g_ShakeAmp = IniReadFloat("Shake", "Amplitude", g_ShakeAmp, path);
+  g_ShakeFreq = IniReadFloat("Shake", "Frequency", g_ShakeFreq, path);
+  g_ShakeSpeedAmpCoupling = IniReadFloat("Shake", "SpeedAmpCoupling", g_ShakeSpeedAmpCoupling, path);
+  g_ShakeSpeedFreqCoupling = IniReadFloat("Shake", "SpeedFreqCoupling", g_ShakeSpeedFreqCoupling, path);
+  g_ShakeRotWeight = IniReadFloat("Shake", "RotWeight", g_ShakeRotWeight, path);
+  g_ShakePosWeight = IniReadFloat("Shake", "PosWeight", g_ShakePosWeight, path);
+  g_ShakeStopWhenStill = IniReadBool("Shake", "StopWhenStill", g_ShakeStopWhenStill, path);
+
+  // ---- Depth of Field ----
+  g_DoFEnabled = IniReadBool("DoF", "Enabled", g_DoFEnabled, path);
+  g_DoFAutofocus = IniReadBool("DoF", "Autofocus", g_DoFAutofocus, path);
+  g_DoFFocusDist = IniReadFloat("DoF", "FocusDist", g_DoFFocusDist, path);
+  g_DoFMaxNearInFocus = IniReadFloat("DoF", "NearRange", g_DoFMaxNearInFocus, path);
+  g_DoFMaxFarInFocus = IniReadFloat("DoF", "FarRange", g_DoFMaxFarInFocus, path);
+
+  // ---- Misc ----
+  g_HideHUD = IniReadBool("Misc", "HideHUD", g_HideHUD, path);
+  g_HidePlayer = IniReadBool("Misc", "HidePlayer", g_HidePlayer, path);
+  g_MovePlayerWithCamera = IniReadBool("Misc", "MovePlayerWithCamera", g_MovePlayerWithCamera, path);
+  g_RememberCamPosition = IniReadBool("Misc", "RememberCamPosition", g_RememberCamPosition, path);
+  g_ShowInfoOverlay = IniReadBool("Misc", "ShowInfoOverlay", g_ShowInfoOverlay, path);
+  g_DisableVehicleShake = IniReadBool("Misc", "DisableVehicleShake", g_DisableVehicleShake, path);
+  g_ShowLockedEntityMarker = IniReadBool("Misc", "ShowLockedEntityMarker", g_ShowLockedEntityMarker, path);
+}
+
+// Persist all tunable settings to the INI. Called from the Misc menu's
+// "Save Settings to INI" row. Transient state (active mode, follow target,
+// live time/weather, freeze) is intentionally NOT saved.
+void SaveSettings() {
+  char path[MAX_PATH];
+  GetIniPath(path, MAX_PATH);
+  char buf[64];
+  auto wf = [&](const char *sec, const char *key, float v) {
+    sprintf_s(buf, "%g", v);
+    WritePrivateProfileStringA(sec, key, buf, path);
+  };
+  auto wb = [&](const char *sec, const char *key, bool v) {
+    WritePrivateProfileStringA(sec, key, v ? "1" : "0", path);
+  };
+  auto wi = [&](const char *sec, const char *key, int v) {
+    sprintf_s(buf, "%d", v);
+    WritePrivateProfileStringA(sec, key, buf, path);
+  };
+
+  wf("Camera", "CamSpeed", g_CamSpeed);
+  wf("Camera", "CamSensitivity", g_CamSensitivity);
+  wf("Camera", "CamFOV", g_CamFOV);
+  wf("Camera", "ZoomSpeed", g_ZoomSpeed);
+  wf("Camera", "RollSpeed", g_RollSpeed);
+  wb("Camera", "Collision", g_CamCollision);
+  wb("Camera", "LockHeight", g_LockHeight);
+  wb("Camera", "AcrobaticRotation", g_RotationEngine);
+  wb("Camera", "WalkMode", g_WalkMode);
+  wf("Camera", "WalkHeight", g_WalkHeight);
+  wb("Camera", "FollowRigidMode", g_FollowRigidMode);
+
+  wb("Drone", "Enabled", g_DroneMode);
+  wf("Drone", "Drag", g_DroneDrag);
+  wf("Drone", "Acceleration", g_DroneAcceleration);
+  wf("Drone", "Gravity", g_DroneGravity);
+  wf("Drone", "Banking", g_DroneBanking);
+  wf("Drone", "RotSmoothing", g_DroneRotSmoothing);
+  wf("Drone", "FovSmoothing", g_DroneFovSmoothing);
+
+  wb("Shake", "Enabled", g_ShakeEnabled);
+  wi("Shake", "Preset", g_ShakePreset);
+  wf("Shake", "Amplitude", g_ShakeAmp);
+  wf("Shake", "Frequency", g_ShakeFreq);
+  wf("Shake", "SpeedAmpCoupling", g_ShakeSpeedAmpCoupling);
+  wf("Shake", "SpeedFreqCoupling", g_ShakeSpeedFreqCoupling);
+  wf("Shake", "RotWeight", g_ShakeRotWeight);
+  wf("Shake", "PosWeight", g_ShakePosWeight);
+  wb("Shake", "StopWhenStill", g_ShakeStopWhenStill);
+
+  wb("DoF", "Enabled", g_DoFEnabled);
+  wb("DoF", "Autofocus", g_DoFAutofocus);
+  wf("DoF", "FocusDist", g_DoFFocusDist);
+  wf("DoF", "NearRange", g_DoFMaxNearInFocus);
+  wf("DoF", "FarRange", g_DoFMaxFarInFocus);
+
+  wb("Misc", "HideHUD", g_HideHUD);
+  wb("Misc", "HidePlayer", g_HidePlayer);
+  wb("Misc", "MovePlayerWithCamera", g_MovePlayerWithCamera);
+  wb("Misc", "RememberCamPosition", g_RememberCamPosition);
+  wb("Misc", "ShowInfoOverlay", g_ShowInfoOverlay);
+  wb("Misc", "DisableVehicleShake", g_DisableVehicleShake);
+  wb("Misc", "ShowLockedEntityMarker", g_ShowLockedEntityMarker);
+}
+
+// Restore every persisted tunable to its factory default — the same values as
+// the global initializers in camera.cpp. Does NOT write the INI (the user can
+// Save afterward if they want the reset persisted) and leaves transient state
+// (active mode, follow target, live time/weather) untouched.
+static void ResetSettingsToDefaults() {
+  g_CamSpeed = 1.0f;
+  g_CamSensitivity = 1.0f;
+  g_CamFOV = 50.0f;
+  g_CamRoll = 0.0f;
+  g_RollSpeed = 1.0f;
+  g_ZoomSpeed = 1.0f;
+  g_CamCollision = false;
+  g_LockHeight = false;
+  g_RotationEngine = false;
+  g_WalkMode = false;
+  g_WalkHeight = 1.7f;
+  g_FollowRigidMode = false;
+
+  g_DroneMode = false;
+  g_DroneDrag = 3.0f;
+  g_DroneAcceleration = 15.0f;
+  g_DroneGravity = 0.0f;
+  g_DroneBanking = 15.0f;
+  g_DroneRotSmoothing = 8.0f;
+  g_DroneFovSmoothing = 5.0f;
+
+  g_ShakeEnabled = false;
+  g_ShakePreset = 0;
+  g_ShakeAmp = 0.0f;
+  g_ShakeFreq = 4.0f;
+  g_ShakeSpeedAmpCoupling = 1.0f;
+  g_ShakeSpeedFreqCoupling = 0.5f;
+  g_ShakeRotWeight = 1.0f;
+  g_ShakePosWeight = 1.0f;
+  g_ShakeStopWhenStill = false;
+
+  g_DoFEnabled = false;
+  g_DoFAutofocus = false;
+  g_DoFFocusDist = 10.0f;
+  g_DoFMaxNearInFocus = 0.5f;
+  g_DoFMaxFarInFocus = 5.0f;
+
+  g_MovePlayerWithCamera = false;
+  g_RememberCamPosition = false;
+  g_ShowInfoOverlay = false;
+  g_DisableVehicleShake = false;
+  g_ShowLockedEntityMarker = true;
 }
 
 // ============================================================
@@ -77,6 +262,24 @@ void LoadSettings() {
 // ============================================================
 
 bool IsMenuTogglePressed() { return IsKeyJustUp(g_MenuKey); }
+
+// Controller has no F5, so LB + RB opens the menu. Edge-triggered (one bumper
+// held, the other just pressed) so holding both — or rolling with a single
+// bumper — doesn't retrigger every frame. 205 = INPUT_FRONTEND_LB, 206 = RB.
+bool IsControllerMenuCombo() {
+  bool lb = PAD::IS_DISABLED_CONTROL_PRESSED(0, 205);
+  bool rb = PAD::IS_DISABLED_CONTROL_PRESSED(0, 206);
+  bool lbJust = PAD::IS_DISABLED_CONTROL_JUST_PRESSED(0, 205);
+  bool rbJust = PAD::IS_DISABLED_CONTROL_JUST_PRESSED(0, 206);
+  return (lb && rbJust) || (rb && lbJust);
+}
+
+// LB + B leaves Free Camera back to the mode picker without opening the menu.
+// Edge-triggered on B (202 = INPUT_FRONTEND_CANCEL) while LB is held.
+bool IsControllerExitCombo() {
+  return PAD::IS_DISABLED_CONTROL_PRESSED(0, 205) &&
+         PAD::IS_DISABLED_CONTROL_JUST_PRESSED(0, 202);
+}
 
 // ============================================================
 //  Drawing Helpers
@@ -86,6 +289,12 @@ static void draw_rect(float x, float y, float w, float h, int r, int g, int b,
                       int a) {
   GRAPHICS::DRAW_RECT((x + (w * 0.5f)), (y + (h * 0.5f)), w, h, r, g, b, a);
 }
+
+// Lowest pixel Y reached by any row drawn this frame. DrawMenuLine updates it;
+// DrawMenuFooter reads it to park the controls hint right under the last row,
+// then resets it. Lets the footer auto-position under any menu without each
+// menu having to report its row count.
+static float s_MenuMaxBottom = 0.0f;
 
 void DrawMenuLine(std::string caption, std::string value, float lineWidth,
                   float lineHeight, float lineTop, float lineLeft,
@@ -156,6 +365,10 @@ void DrawMenuLine(std::string caption, std::string value, float lineWidth,
       title ? (titleHeight / (float)screen_h) : (rowHeight / (float)screen_h);
   float rectTopScaled = correctLineTop / (float)screen_h;
 
+  // Track the lowest row bottom (in px) so the footer can sit just beneath it.
+  float rowBottomPx = correctLineTop + (title ? titleHeight : rowHeight);
+  if (rowBottomPx > s_MenuMaxBottom) s_MenuMaxBottom = rowBottomPx;
+
   // Text Y centering offset (magic numbers relative to font cap height)
   float textYOffsetScaled =
       title ? (12.0f / (float)screen_h) : (6.0f / (float)screen_h);
@@ -208,6 +421,54 @@ void DrawMenuValue(std::string caption, std::string value, float lineWidth,
                textLeft, active, false);
 }
 
+// Draw the controls hint bar just under the last row of whatever menu is open.
+// The label set switches between keyboard and controller based on the last
+// input device the game saw (IS_INPUT_DISABLED(2) is TRUE on a controller).
+// ASCII only — the GTA Chalet Comprime menu font has no arrow/glyph coverage,
+// so we spell the directions out. Call once per draw frame, after all rows.
+static void DrawMenuFooter() {
+  if (s_MenuMaxBottom <= 0.0f) return; // nothing drawn this frame yet
+  float top = s_MenuMaxBottom + 5.0f;
+  s_MenuMaxBottom = 0.0f; // consume; rows repopulate it next frame
+
+  // DrawMenuLine forces every row to lineLeft=0 / width=320; match that so the
+  // footer lines up flush under the menu regardless of the caller's lineWidth.
+  const float lineLeft = 0.0f;
+  const float lineWidth = 320.0f;
+
+  // IS_INPUT_DISABLED(2) reports TRUE for keyboard/mouse, FALSE for a
+  // controller — so a controller is "input NOT disabled" here.
+  bool usingPad = invoke<BOOL>(0xA571D46727E2B718, 2) == 0;
+  const char *hint =
+      usingPad ? "D-Pad: Move / Adjust    A: Select    B: Back"
+               : "Arrows: Move / Adjust    Enter: Select    Bksp: Back";
+
+  int screen_w, screen_h;
+  GRAPHICS::GET_SCREEN_RESOLUTION(&screen_w, &screen_h);
+
+  float barHeight = 26.0f;
+  float topScaled = top / (float)screen_h;
+  float heightScaled = barHeight / (float)screen_h;
+  float leftScaled = lineLeft / (float)screen_w;
+  float widthScaled = lineWidth / (float)screen_w;
+
+  // Dim bar a touch darker than the rows so it reads as chrome, not an option.
+  draw_rect(leftScaled, topScaled, widthScaled, heightScaled, 0, 0, 0, 220);
+
+  // Centered, small, light-grey hint text.
+  float centerX = (lineLeft + lineWidth * 0.5f) / (float)screen_w;
+  float textY = (top + 5.0f) / (float)screen_h;
+  UI::SET_TEXT_FONT(0);
+  UI::SET_TEXT_SCALE(0.0f, 0.26f);
+  UI::SET_TEXT_COLOUR(190, 190, 190, 255);
+  UI::SET_TEXT_CENTRE(1);
+  UI::SET_TEXT_DROPSHADOW(0, 0, 0, 0, 0);
+  UI::SET_TEXT_EDGE(0, 0, 0, 0, 0);
+  UI::_SET_TEXT_ENTRY((char *)"STRING");
+  UI::_ADD_TEXT_COMPONENT_STRING((LPSTR)hint);
+  UI::_DRAW_TEXT(centerX, textY);
+}
+
 void MenuBeep() {
   AUDIO::PLAY_SOUND_FRONTEND(-1, (char *)"NAV_UP_DOWN",
                              (char *)"HUD_FRONTEND_DEFAULT_SOUNDSET", 0);
@@ -238,6 +499,118 @@ static void GetMenuButtons(bool *select, bool *back, bool *up, bool *down,
   if (left)
     *left = IsKeyDown(VK_NUMPAD4) || IsKeyDown(VK_LEFT) ||
             PAD::IS_DISABLED_CONTROL_PRESSED(0, 189);
+}
+
+// ============================================================
+//  Shared per-frame + control helpers
+// ============================================================
+
+// Every menu suppresses the same phone / character-wheel controls so the
+// player can't dismiss the menu sideways. Defined once here; every submenu
+// calls it at the top of its draw loop.
+static void DisableMenuPhoneControls() {
+  CONTROLS::DISABLE_CONTROL_ACTION(0, 27, TRUE);   // INPUT_PHONE
+  CONTROLS::DISABLE_CONTROL_ACTION(0, 172, TRUE);  // INPUT_PHONE_UP
+  CONTROLS::DISABLE_CONTROL_ACTION(0, 173, TRUE);  // INPUT_PHONE_DOWN
+  CONTROLS::DISABLE_CONTROL_ACTION(0, 174, TRUE);  // INPUT_PHONE_LEFT
+  CONTROLS::DISABLE_CONTROL_ACTION(0, 175, TRUE);  // INPUT_PHONE_RIGHT
+  CONTROLS::DISABLE_CONTROL_ACTION(0, 19, TRUE);   // INPUT_CHARACTER_WHEEL
+  CONTROLS::DISABLE_CONTROL_ACTION(0, 166, TRUE);  // INPUT_SELECT_CHARACTER_MICHAEL
+  CONTROLS::DISABLE_CONTROL_ACTION(0, 167, TRUE);  // INPUT_SELECT_CHARACTER_FRANKLIN
+  CONTROLS::DISABLE_CONTROL_ACTION(0, 168, TRUE);  // INPUT_SELECT_CHARACTER_TREVOR
+  CONTROLS::DISABLE_CONTROL_ACTION(0, 169, TRUE);  // INPUT_SELECT_CHARACTER_MULTIPLAYER
+}
+
+// Advance the world by exactly one frame's worth of plugin work while a menu
+// is open. script.cpp's main loop is blocked inside ProcessConfigMenu, so the
+// menu draw loops have to drive everything themselves. This mirrors the main
+// loop's order precisely (sequence tick OR free-cam update, then time/weather,
+// status text, global effects) so behavior is identical whether or not a menu
+// happens to be open. Previously each submenu hand-rolled this and several
+// forgot UpdateTimeWeather(), which froze time-lapse / weather-blend while you
+// sat in the Lens or DoF submenu — this fixes that uniformly.
+static void MenuFrameTick() {
+  if (g_CameraMode == 1 && Sequence_IsInMode()) {
+    Sequence_FrameTick();
+  } else if (g_FreeCamActive) {
+    UpdateFreeCamera();
+  }
+  UpdateTimeWeather();
+  UpdateStatusText();
+  UpdateGlobalEffects();
+}
+
+// Fire a ray straight out of the camera and return the entity under the
+// crosshair (0 if none). `flags` is the shapetest entity-type mask
+// (30 = vehicles|peds|ragdolls|objects). Shared by every "lock onto whatever
+// I'm aiming at" path in both the Free Camera and Sequence follow menus.
+static int RaycastEntityFromCamera(int flags) {
+  float posX, posY, posZ, pitch, yaw, roll;
+  GetCameraState(posX, posY, posZ, pitch, yaw, roll);
+  float yawRad = yaw * 0.0174532925f;
+  float pitchRad = pitch * 0.0174532925f;
+  float dirX = -sinf(yawRad) * cosf(pitchRad);
+  float dirY = cosf(yawRad) * cosf(pitchRad);
+  float dirZ = sinf(pitchRad);
+  float endX = posX + dirX * 1000.0f;
+  float endY = posY + dirY * 1000.0f;
+  float endZ = posZ + dirZ * 1000.0f;
+  int rayHandle = invoke<int>(0x377906D8A31E5586, posX, posY, posZ, endX, endY,
+                              endZ, flags, PLAYER::PLAYER_PED_ID(), 7);
+  int hit = 0, entityHit = 0;
+  Vector3 ignore1{}, ignore2{};
+  invoke<int>(0x3D87450E15D98694, rayHandle, &hit, &ignore1, &ignore2,
+              &entityHit);
+  if (hit && entityHit != 0 && ENTITY::DOES_ENTITY_EXIST(entityHit) &&
+      (ENTITY::IS_ENTITY_A_PED(entityHit) ||
+       ENTITY::IS_ENTITY_A_VEHICLE(entityHit) ||
+       ENTITY::IS_ENTITY_AN_OBJECT(entityHit))) {
+    return entityHit;
+  }
+  return 0;
+}
+
+// Draw the white hover marker floating above an entity — used while aiming,
+// before the user commits the lock, so they can see what they'll grab.
+static void DrawEntityHoverMarker(int entity) {
+  if (entity == 0 || !ENTITY::DOES_ENTITY_EXIST(entity)) return;
+  Vector3 entPos = ENTITY::GET_ENTITY_COORDS(entity, TRUE);
+  GRAPHICS::DRAW_MARKER(0, entPos.x, entPos.y, entPos.z + 1.25f, 0, 0, 0, 0, 0,
+                        0, 0.4f, 0.4f, 0.4f, 255, 255, 255, 200, TRUE, TRUE, 2,
+                        FALSE, NULL, NULL, FALSE);
+}
+
+// Human-readable name for g_FollowMode (0/1/2). Single source of truth so the
+// label reads the same in every menu that shows it.
+static const char *FollowModeName(int mode) {
+  return (mode == 1) ? "Player" : (mode == 2) ? "Aimed Entity" : "None";
+}
+
+// Adaptive auto-repeat for held left/right on numeric sliders. The longer the
+// key is held the larger the step multiplier AND the faster the repeat, so a
+// tap nudges by one base step while a long hold sweeps a wide range quickly.
+// `held` is whether left or right is down this frame; `holdStart`/`wasHolding`
+// are caller-owned state declared before the menu's loop. The chosen repeat
+// delay (ms) is written to *waitOut; the return value is the multiplier to
+// scale the row's base step by. Releasing the key resets the ramp, so repeated
+// taps always move by exactly one base step (fine control preserved).
+static float HoldAccel(bool held, DWORD &holdStart, bool &wasHolding,
+                       DWORD *waitOut) {
+  if (held && !wasHolding) holdStart = GetTickCount();
+  wasHolding = held;
+  if (!held) {
+    if (waitOut) *waitOut = 100;
+    return 1.0f;
+  }
+  DWORD elapsed = GetTickCount() - holdStart;
+  float mult;
+  DWORD wait;
+  if      (elapsed > 3000) { mult = 10.0f; wait = 40; }
+  else if (elapsed > 1500) { mult = 5.0f;  wait = 55; }
+  else if (elapsed > 700)  { mult = 2.0f;  wait = 80; }
+  else                     { mult = 1.0f;  wait = 110; }
+  if (waitOut) *waitOut = wait;
+  return mult;
 }
 
 // ============================================================
@@ -275,10 +648,7 @@ static bool PromptForFloat(float &outVal, float currentVal) {
                                       (char *)valStr.c_str(), (char *)"",
                                       (char *)"", (char *)"", 15);
   while (GAMEPLAY::UPDATE_ONSCREEN_KEYBOARD() == 0) {
-    if (g_FreeCamActive)
-      UpdateFreeCamera();
-    UpdateStatusText();
-    UpdateGlobalEffects();
+    MenuFrameTick();
     WAIT(0);
   }
   if (GAMEPLAY::UPDATE_ONSCREEN_KEYBOARD() == 1) {
@@ -341,6 +711,10 @@ static void ProcessMovementMenu() {
   // iterations so the viewport doesn't jump.
   int scrollOffset = 0;
 
+  // Hold-to-accelerate state for left/right on numeric rows.
+  DWORD holdStart = 0;
+  bool wasHolding = false;
+
   DWORD waitTime = 150;
   while (true) {
     // Dynamic line count
@@ -369,17 +743,7 @@ static void ProcessMovementMenu() {
 
     DWORD maxTick = GetTickCount() + waitTime;
     do {
-      // Suppress phone & character wheel while menu is open
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 27, TRUE);   // INPUT_PHONE
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 172, TRUE);  // INPUT_PHONE_UP
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 173, TRUE);  // INPUT_PHONE_DOWN
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 174, TRUE);  // INPUT_PHONE_LEFT
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 175, TRUE);  // INPUT_PHONE_RIGHT
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 19, TRUE);   // INPUT_CHARACTER_WHEEL
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 166, TRUE);  // INPUT_SELECT_CHARACTER_MICHAEL
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 167, TRUE);  // INPUT_SELECT_CHARACTER_FRANKLIN
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 168, TRUE);  // INPUT_SELECT_CHARACTER_TREVOR
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 169, TRUE);  // INPUT_SELECT_CHARACTER_MULTIPLAYER
+      DisableMenuPhoneControls();
       // Title shows position when scrolled (X-Y / total) so the user
       // always knows where they are even when only a slice is rendered.
       char movTitle[64];
@@ -445,11 +809,7 @@ static void ProcessMovementMenu() {
       row++;
 
       // Follow Mode
-      std::string followStr = "None";
-      if (g_FollowMode == 1)
-        followStr = "Player";
-      else if (g_FollowMode == 2)
-        followStr = "Aimed Entity";
+      std::string followStr = FollowModeName(g_FollowMode);
       if (vis(row))
         DrawMenuValue("Follow Target", followStr, lineWidth, 9.0, rowTop(row),
                       0.0, 9.0, activeIdx == row);
@@ -486,39 +846,7 @@ static void ProcessMovementMenu() {
 
         // Draw hover marker if we are not yet locked onto an entity
         if (g_FollowTargetEntity == 0) {
-          float posX, posY, posZ, pitch, yaw, roll;
-          GetCameraState(posX, posY, posZ, pitch, yaw, roll);
-
-          float yawRad = yaw * 0.0174532925f;
-          float pitchRad = pitch * 0.0174532925f;
-          float dirX = -sin(yawRad) * cos(pitchRad);
-          float dirY = cos(yawRad) * cos(pitchRad);
-          float dirZ = sin(pitchRad);
-
-          float endX = posX + dirX * 1000.0f;
-          float endY = posY + dirY * 1000.0f;
-          float endZ = posZ + dirZ * 1000.0f;
-
-          // 14 = Vehicles (2) | Peds (4) | Objects (8)
-          int handle = invoke<int>(0x377906D8A31E5586, posX, posY, posZ, endX,
-                                   endY, endZ, 14, PLAYER::PLAYER_PED_ID(), 7);
-
-          int hit = 0;
-          int entityHit = 0;
-          Vector3 hitCoords, surfaceNormal;
-          invoke<int>(0x3D87450E15D98694, handle, &hit, &hitCoords,
-                      &surfaceNormal, &entityHit);
-
-          if (hit && entityHit != 0 && ENTITY::DOES_ENTITY_EXIST(entityHit) &&
-              (ENTITY::IS_ENTITY_A_PED(entityHit) ||
-               ENTITY::IS_ENTITY_A_VEHICLE(entityHit) ||
-               ENTITY::IS_ENTITY_AN_OBJECT(entityHit))) {
-            // Draw a white marker above the entity's position
-            Vector3 entPos = ENTITY::GET_ENTITY_COORDS(entityHit, TRUE);
-            GRAPHICS::DRAW_MARKER(0, entPos.x, entPos.y, entPos.z + 1.25f, 0, 0,
-                                  0, 0, 0, 0, 0.4f, 0.4f, 0.4f, 255, 255, 255,
-                                  200, TRUE, TRUE, 2, FALSE, NULL, NULL, FALSE);
-          }
+          DrawEntityHoverMarker(RaycastEntityFromCamera(30));
         }
       }
 
@@ -557,11 +885,8 @@ static void ProcessMovementMenu() {
         row++;
       }
 
-      if (g_FreeCamActive)
-        UpdateFreeCamera();
-
-      UpdateStatusText();
-      UpdateGlobalEffects();
+      DrawMenuFooter();
+      MenuFrameTick();
       WAIT(0);
     } while (GetTickCount() < maxTick);
     waitTime = 0;
@@ -662,34 +987,9 @@ static void ProcessMovementMenu() {
           waitTime = 200;
         } else {
           // Fire a raycast forward to lock the target at center of screen
-          float posX, posY, posZ, pitch, yaw, roll;
-          GetCameraState(posX, posY, posZ, pitch, yaw, roll);
-
-          float yawRad = yaw * 0.0174532925f;
-          float pitchRad = pitch * 0.0174532925f;
-          float dirX = -sin(yawRad) * cos(pitchRad);
-          float dirY = cos(yawRad) * cos(pitchRad);
-          float dirZ = sin(pitchRad);
-
-          float endX = posX + dirX * 1000.0f;
-          float endY = posY + dirY * 1000.0f;
-          float endZ = posZ + dirZ * 1000.0f;
-
-          // 14 = Vehicles (2) | Peds (4) | Objects (8)
-          int handle = invoke<int>(0x377906D8A31E5586, posX, posY, posZ, endX,
-                                   endY, endZ, 14, PLAYER::PLAYER_PED_ID(), 7);
-
-          int hit = 0;
-          int entityHit = 0;
-          Vector3 ignore1, ignore2;
-          invoke<int>(0x3D87450E15D98694, handle, &hit, &ignore1, &ignore2,
-                      &entityHit); // GET_SHAPE_TEST_RESULT
-
-          if (hit && entityHit != 0 && ENTITY::DOES_ENTITY_EXIST(entityHit) &&
-              (ENTITY::IS_ENTITY_A_PED(entityHit) ||
-               ENTITY::IS_ENTITY_A_VEHICLE(entityHit) ||
-               ENTITY::IS_ENTITY_AN_OBJECT(entityHit))) {
-            g_FollowTargetEntity = entityHit;
+          int e = RaycastEntityFromCamera(30);
+          if (e != 0) {
+            g_FollowTargetEntity = e;
             s_LockFailed = false;
             SetStatusText("Locked onto entity");
           } else {
@@ -714,26 +1014,36 @@ static void ProcessMovementMenu() {
       }
     }
 
+    // Hold-to-accelerate applies only to the continuous numeric rows; the
+    // Follow-mode cycle and the marker/rigid toggles keep a fixed repeat so
+    // they don't spin when held.
+    bool numericRow = (activeIdx >= 0 && activeIdx <= 3) ||
+                      (walkHeightIdx != -1 && activeIdx == walkHeightIdx) ||
+                      (droneStartIdx != -1 && activeIdx >= droneStartIdx);
+    DWORD adjWait = 100;
+    float mult = HoldAccel((bRight || bLeft) && numericRow, holdStart,
+                           wasHolding, &adjWait);
+
     if (bRight) {
       MenuBeep();
       if (activeIdx == 0) {
-        g_CamSpeed += 0.1f;
+        g_CamSpeed += 0.1f * mult;
         if (g_CamSpeed > 50.0f)
           g_CamSpeed = 50.0f;
       } else if (activeIdx == 1) {
-        g_CamSensitivity += 0.1f;
+        g_CamSensitivity += 0.1f * mult;
         if (g_CamSensitivity > 5.0f)
           g_CamSensitivity = 5.0f;
       } else if (activeIdx == 2) {
-        g_ZoomSpeed += 0.1f;
+        g_ZoomSpeed += 0.1f * mult;
         if (g_ZoomSpeed > 10.0f)
           g_ZoomSpeed = 10.0f;
       } else if (activeIdx == 3) {
-        g_RollSpeed += 0.1f;
+        g_RollSpeed += 0.1f * mult;
         if (g_RollSpeed > 10.0f)
           g_RollSpeed = 10.0f;
       } else if (activeIdx == walkHeightIdx) {
-        g_WalkHeight += 0.1f;
+        g_WalkHeight += 0.1f * mult;
         if (g_WalkHeight > 50.0f)
           g_WalkHeight = 50.0f;
       } else if (activeIdx == followIdx) {
@@ -751,59 +1061,59 @@ static void ProcessMovementMenu() {
         int dIdx = activeIdx - droneStartIdx;
         switch (dIdx) {
         case 0:
-          g_DroneDrag += 0.5f;
+          g_DroneDrag += 0.5f * mult;
           if (g_DroneDrag > 20.0f)
             g_DroneDrag = 20.0f;
           break;
         case 1:
-          g_DroneAcceleration += 1.0f;
+          g_DroneAcceleration += 1.0f * mult;
           if (g_DroneAcceleration > 50.0f)
             g_DroneAcceleration = 50.0f;
           break;
         case 2:
-          g_DroneGravity += 0.5f;
+          g_DroneGravity += 0.5f * mult;
           if (g_DroneGravity > 20.0f)
             g_DroneGravity = 20.0f;
           break;
         case 3:
-          g_DroneBanking += 1.0f;
+          g_DroneBanking += 1.0f * mult;
           if (g_DroneBanking > 45.0f)
             g_DroneBanking = 45.0f;
           break;
         case 4:
-          g_DroneRotSmoothing += 0.5f;
+          g_DroneRotSmoothing += 0.5f * mult;
           if (g_DroneRotSmoothing > 20.0f)
             g_DroneRotSmoothing = 20.0f;
           break;
         case 5:
-          g_DroneFovSmoothing += 0.5f;
+          g_DroneFovSmoothing += 0.5f * mult;
           if (g_DroneFovSmoothing > 20.0f)
             g_DroneFovSmoothing = 20.0f;
           break;
         }
       }
-      waitTime = 100;
+      waitTime = adjWait;
     }
     if (bLeft) {
       MenuBeep();
       if (activeIdx == 0) {
-        g_CamSpeed -= 0.1f;
+        g_CamSpeed -= 0.1f * mult;
         if (g_CamSpeed < 0.1f)
           g_CamSpeed = 0.1f;
       } else if (activeIdx == 1) {
-        g_CamSensitivity -= 0.1f;
+        g_CamSensitivity -= 0.1f * mult;
         if (g_CamSensitivity < 0.1f)
           g_CamSensitivity = 0.1f;
       } else if (activeIdx == 2) {
-        g_ZoomSpeed -= 0.1f;
+        g_ZoomSpeed -= 0.1f * mult;
         if (g_ZoomSpeed < 0.1f)
           g_ZoomSpeed = 0.1f;
       } else if (activeIdx == 3) {
-        g_RollSpeed -= 0.1f;
+        g_RollSpeed -= 0.1f * mult;
         if (g_RollSpeed < 0.1f)
           g_RollSpeed = 0.1f;
       } else if (activeIdx == walkHeightIdx) {
-        g_WalkHeight -= 0.1f;
+        g_WalkHeight -= 0.1f * mult;
         if (g_WalkHeight < 0.1f)
           g_WalkHeight = 0.1f;
       } else if (activeIdx == followIdx) {
@@ -822,38 +1132,38 @@ static void ProcessMovementMenu() {
         int dIdx = activeIdx - droneStartIdx;
         switch (dIdx) {
         case 0:
-          g_DroneDrag -= 0.5f;
+          g_DroneDrag -= 0.5f * mult;
           if (g_DroneDrag < 0.5f)
             g_DroneDrag = 0.5f;
           break;
         case 1:
-          g_DroneAcceleration -= 1.0f;
+          g_DroneAcceleration -= 1.0f * mult;
           if (g_DroneAcceleration < 1.0f)
             g_DroneAcceleration = 1.0f;
           break;
         case 2:
-          g_DroneGravity -= 0.5f;
+          g_DroneGravity -= 0.5f * mult;
           if (g_DroneGravity < 0.0f)
             g_DroneGravity = 0.0f;
           break;
         case 3:
-          g_DroneBanking -= 1.0f;
+          g_DroneBanking -= 1.0f * mult;
           if (g_DroneBanking < 0.0f)
             g_DroneBanking = 0.0f;
           break;
         case 4:
-          g_DroneRotSmoothing -= 0.5f;
+          g_DroneRotSmoothing -= 0.5f * mult;
           if (g_DroneRotSmoothing < 1.0f)
             g_DroneRotSmoothing = 1.0f;
           break;
         case 5:
-          g_DroneFovSmoothing -= 0.5f;
+          g_DroneFovSmoothing -= 0.5f * mult;
           if (g_DroneFovSmoothing < 0.0f)
             g_DroneFovSmoothing = 0.0f;
           break;
         }
       }
-      waitTime = 100;
+      waitTime = adjWait;
     }
   }
 }
@@ -867,21 +1177,14 @@ static void ProcessLensMenu() {
   const int lineCount = 2;
   int activeIdx = 0;
 
+  DWORD holdStart = 0;
+  bool wasHolding = false;
+
   DWORD waitTime = 150;
   while (true) {
     DWORD maxTick = GetTickCount() + waitTime;
     do {
-      // Suppress phone & character wheel while menu is open
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 27, TRUE);   // INPUT_PHONE
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 172, TRUE);  // INPUT_PHONE_UP
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 173, TRUE);  // INPUT_PHONE_DOWN
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 174, TRUE);  // INPUT_PHONE_LEFT
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 175, TRUE);  // INPUT_PHONE_RIGHT
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 19, TRUE);   // INPUT_CHARACTER_WHEEL
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 166, TRUE);  // INPUT_SELECT_CHARACTER_MICHAEL
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 167, TRUE);  // INPUT_SELECT_CHARACTER_FRANKLIN
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 168, TRUE);  // INPUT_SELECT_CHARACTER_TREVOR
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 169, TRUE);  // INPUT_SELECT_CHARACTER_MULTIPLAYER
+      DisableMenuPhoneControls();
       DrawMenuLine("LENS SETTINGS", "", lineWidth, 15.0, 18.0, 0.0, 5.0, false,
                    true);
       DrawMenuValue("Lens Zoom (FOV)", FormatFloat(g_CamFOV, 0) + "\xC2\xB0",
@@ -889,11 +1192,8 @@ static void ProcessLensMenu() {
       DrawMenuValue("Lens Tilt (Roll)", FormatFloat(g_CamRoll, 0) + "\xC2\xB0",
                     lineWidth, 9.0, 60.0 + 1 * 36.0, 0.0, 9.0, activeIdx == 1);
 
-      if (g_FreeCamActive)
-        UpdateFreeCamera();
-
-      UpdateStatusText();
-      UpdateGlobalEffects();
+      DrawMenuFooter();
+      MenuFrameTick();
       WAIT(0);
     } while (GetTickCount() < maxTick);
     waitTime = 0;
@@ -940,38 +1240,41 @@ static void ProcessLensMenu() {
       waitTime = 200;
     }
 
+    DWORD adjWait = 100;
+    float mult = HoldAccel(bRight || bLeft, holdStart, wasHolding, &adjWait);
+
     if (bRight) {
       MenuBeep();
       switch (activeIdx) {
       case 0:
-        g_CamFOV += 1.0f;
+        g_CamFOV += 1.0f * mult;
         if (g_CamFOV > 130.0f)
           g_CamFOV = 130.0f;
         break;
       case 1:
-        g_CamRoll += 1.0f;
+        g_CamRoll += 1.0f * mult;
         if (g_CamRoll > 180.0f)
           g_CamRoll -= 360.0f;
         break;
       }
-      waitTime = 100;
+      waitTime = adjWait;
     }
 
     if (bLeft) {
       MenuBeep();
       switch (activeIdx) {
       case 0:
-        g_CamFOV -= 1.0f;
+        g_CamFOV -= 1.0f * mult;
         if (g_CamFOV < 5.0f)
           g_CamFOV = 5.0f;
         break;
       case 1:
-        g_CamRoll -= 1.0f;
+        g_CamRoll -= 1.0f * mult;
         if (g_CamRoll < -180.0f)
           g_CamRoll += 360.0f;
         break;
       }
-      waitTime = 100;
+      waitTime = adjWait;
     }
   }
 }
@@ -985,21 +1288,14 @@ static void ProcessDoFMenu() {
   const int lineCount = 5;
   int activeIdx = 0;
 
+  DWORD holdStart = 0;
+  bool wasHolding = false;
+
   DWORD waitTime = 150;
   while (true) {
     DWORD maxTick = GetTickCount() + waitTime;
     do {
-      // Suppress phone & character wheel while menu is open
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 27, TRUE);   // INPUT_PHONE
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 172, TRUE);  // INPUT_PHONE_UP
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 173, TRUE);  // INPUT_PHONE_DOWN
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 174, TRUE);  // INPUT_PHONE_LEFT
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 175, TRUE);  // INPUT_PHONE_RIGHT
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 19, TRUE);   // INPUT_CHARACTER_WHEEL
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 166, TRUE);  // INPUT_SELECT_CHARACTER_MICHAEL
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 167, TRUE);  // INPUT_SELECT_CHARACTER_FRANKLIN
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 168, TRUE);  // INPUT_SELECT_CHARACTER_TREVOR
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 169, TRUE);  // INPUT_SELECT_CHARACTER_MULTIPLAYER
+      DisableMenuPhoneControls();
       DrawMenuLine("DEPTH OF FIELD", "", lineWidth, 15.0, 18.0, 0.0, 5.0, false,
                    true);
       DrawMenuValue("Depth of Field", FormatBool(g_DoFEnabled), lineWidth, 9.0,
@@ -1013,11 +1309,8 @@ static void ProcessDoFMenu() {
       DrawMenuValue("Far Focus Range", FormatFloat(g_DoFMaxFarInFocus), lineWidth,
                     9.0, 60.0 + 4 * 36.0, 0.0, 9.0, activeIdx == 4);
 
-      if (g_FreeCamActive)
-        UpdateFreeCamera();
-
-      UpdateStatusText();
-      UpdateGlobalEffects();
+      DrawMenuFooter();
+      MenuFrameTick();
       WAIT(0);
     } while (GetTickCount() < maxTick);
     waitTime = 0;
@@ -1088,47 +1381,50 @@ static void ProcessDoFMenu() {
       }
     }
 
+    DWORD adjWait = 100;
+    float mult = HoldAccel(bRight || bLeft, holdStart, wasHolding, &adjWait);
+
     if (bRight) {
       MenuBeep();
       switch (activeIdx) {
       case 2:
-        g_DoFFocusDist += 1.0f;
+        g_DoFFocusDist += 1.0f * mult;
         if (g_DoFFocusDist > 500.0f)
           g_DoFFocusDist = 500.0f;
         break;
       case 3:
-        g_DoFMaxNearInFocus += 0.1f;
+        g_DoFMaxNearInFocus += 0.1f * mult;
         if (g_DoFMaxNearInFocus > 50.0f)
           g_DoFMaxNearInFocus = 50.0f;
         break;
       case 4:
-        g_DoFMaxFarInFocus += 0.1f;
+        g_DoFMaxFarInFocus += 0.1f * mult;
         if (g_DoFMaxFarInFocus > 50.0f)
           g_DoFMaxFarInFocus = 50.0f;
         break;
       }
-      waitTime = 100;
+      waitTime = adjWait;
     }
     if (bLeft) {
       MenuBeep();
       switch (activeIdx) {
       case 2:
-        g_DoFFocusDist -= 1.0f;
+        g_DoFFocusDist -= 1.0f * mult;
         if (g_DoFFocusDist < 0.5f)
           g_DoFFocusDist = 0.5f;
         break;
       case 3:
-        g_DoFMaxNearInFocus -= 0.1f;
+        g_DoFMaxNearInFocus -= 0.1f * mult;
         if (g_DoFMaxNearInFocus < 0.0f)
           g_DoFMaxNearInFocus = 0.0f;
         break;
       case 4:
-        g_DoFMaxFarInFocus -= 0.1f;
+        g_DoFMaxFarInFocus -= 0.1f * mult;
         if (g_DoFMaxFarInFocus < 0.0f)
           g_DoFMaxFarInFocus = 0.0f;
         break;
       }
-      waitTime = 100;
+      waitTime = adjWait;
     }
   }
 }
@@ -1139,12 +1435,18 @@ static void ProcessDoFMenu() {
 
 static void ProcessTimeWeatherMenu() {
   const float lineWidth = 300.0f;
-  const int lineCount = 8;
+  const int lineCount = 10;
   int activeIdx = 0;
 
   // Hold-to-accelerate tracking for time-of-day left/right
   DWORD timeHoldStart = 0;   // GetTickCount() when the button was first held
   bool  wasHoldingTime = false;  // was left/right held on previous iteration?
+  // Separate hold-to-accelerate state for the Weather Blend row.
+  DWORD blendHoldStart = 0;
+  bool  wasHoldingBlend = false;
+  // ...and for the Slow Motion (time scale) row.
+  DWORD scaleHoldStart = 0;
+  bool  wasHoldingScale = false;
 
   // Sync our variables with the current game time right when we open the menu
   // so the UI always reflects reality, instead of reading it every frame.
@@ -1157,17 +1459,7 @@ static void ProcessTimeWeatherMenu() {
   while (true) {
     DWORD maxTick = GetTickCount() + waitTime;
     do {
-      // Suppress phone & character wheel while menu is open
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 27, TRUE);   // INPUT_PHONE
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 172, TRUE);  // INPUT_PHONE_UP
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 173, TRUE);  // INPUT_PHONE_DOWN
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 174, TRUE);  // INPUT_PHONE_LEFT
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 175, TRUE);  // INPUT_PHONE_RIGHT
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 19, TRUE);   // INPUT_CHARACTER_WHEEL
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 166, TRUE);  // INPUT_SELECT_CHARACTER_MICHAEL
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 167, TRUE);  // INPUT_SELECT_CHARACTER_FRANKLIN
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 168, TRUE);  // INPUT_SELECT_CHARACTER_TREVOR
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 169, TRUE);  // INPUT_SELECT_CHARACTER_MULTIPLAYER
+      DisableMenuPhoneControls();
       DrawMenuLine("TIME & WEATHER", "", lineWidth, 15.0, 18.0, 0.0, 5.0, false,
                    true);
       DrawMenuValue("Pause Time of Day", FormatBool(g_TimePaused), lineWidth, 9.0,
@@ -1196,15 +1488,22 @@ static void ProcessTimeWeatherMenu() {
                     60.0 + 5 * 36.0, 0.0, 9.0, activeIdx == 5);
       DrawMenuValue("Apply Weather", "", lineWidth, 9.0, 60.0 + 6 * 36.0, 0.0,
                     9.0, activeIdx == 6);
-      DrawMenuValue("Freeze Entire World", FormatBool(g_FreezeWorld), lineWidth, 9.0,
+      DrawMenuValue("Pause Game", FormatBool(g_FreezeWorld), lineWidth, 9.0,
                     60.0 + 7 * 36.0, 0.0, 9.0, activeIdx == 7);
+      DrawMenuValue("Freeze All Entities", FormatBool(g_FreezeEntities), lineWidth,
+                    9.0, 60.0 + 8 * 36.0, 0.0, 9.0, activeIdx == 8);
+      // Slow Motion — Pause Game overrides it (shows "paused"). 100% = real
+      // time. Free Camera only.
+      char slowStr[24];
+      if (g_FreezeWorld)
+        sprintf_s(slowStr, "paused");
+      else
+        sprintf_s(slowStr, "%d%%", (int)(g_WorldTimeScale * 100.0f + 0.5f));
+      DrawMenuValue("Slow Motion", std::string(slowStr), lineWidth, 9.0,
+                    60.0 + 9 * 36.0, 0.0, 9.0, activeIdx == 9);
 
-      if (g_FreeCamActive)
-        UpdateFreeCamera();
-
-      UpdateTimeWeather();
-      UpdateStatusText();
-      UpdateGlobalEffects();
+      DrawMenuFooter();
+      MenuFrameTick();
       WAIT(0);
     } while (GetTickCount() < maxTick);
     waitTime = 0;
@@ -1281,10 +1580,19 @@ static void ProcessTimeWeatherMenu() {
       } else if (activeIdx == 7) {
         MenuBeep();
         g_FreezeWorld = !g_FreezeWorld;
-        if (!g_FreezeWorld) {
-          GAMEPLAY::SET_TIME_SCALE(1.0f);
-        }
-        SetStatusText(g_FreezeWorld ? "World frozen" : "World unfrozen");
+        SetStatusText(g_FreezeWorld ? "Game paused (full freeze)"
+                                    : "Game resumed");
+        waitTime = 200;
+      } else if (activeIdx == 8) {
+        MenuBeep();
+        g_FreezeEntities = !g_FreezeEntities;
+        SetStatusText(g_FreezeEntities ? "Entities frozen (camera stays live)"
+                                       : "Entities released");
+        waitTime = 200;
+      } else if (activeIdx == 9) {
+        MenuBeep();
+        g_WorldTimeScale = 1.0f; // Enter resets slow motion to real time
+        SetStatusText("Slow motion reset to 100%");
         waitTime = 200;
       }
     }
@@ -1305,6 +1613,17 @@ static void ProcessTimeWeatherMenu() {
       else if (held > 500)  { timeStep = 1;  timeWait = 80; }
       // else default: 1 min, 150 ms
     }
+
+    // Weather Blend (row 5) gets its own hold-to-accelerate ramp. The Time
+    // row keeps its bespoke ramp above; enum rows (timelapse / weather) stay
+    // at a fixed repeat so they don't spin through the list when held.
+    DWORD blendWait = 100;
+    float blendMult = HoldAccel((bRight || bLeft) && activeIdx == 5,
+                                blendHoldStart, wasHoldingBlend, &blendWait);
+    // Slow Motion (row 9) ramp.
+    DWORD scaleWait = 100;
+    float scaleMult = HoldAccel((bRight || bLeft) && activeIdx == 9,
+                                scaleHoldStart, wasHoldingScale, &scaleWait);
 
     if (bRight) {
       MenuBeep();
@@ -1329,12 +1648,21 @@ static void ProcessTimeWeatherMenu() {
         g_Weather2Index = (g_Weather2Index + 1) % g_WeatherCount;
         break;
       case 5:
-        g_WeatherBlend += 0.05f;
+        g_WeatherBlend += 0.05f * blendMult;
         if (g_WeatherBlend > 1.0f)
           g_WeatherBlend = 1.0f;
         break;
+      case 9:
+        g_WorldTimeScale += 0.01f * scaleMult;
+        if (g_WorldTimeScale > 1.0f)
+          g_WorldTimeScale = 1.0f;
+        break;
       }
-      if (activeIdx != 1)
+      if (activeIdx == 5)
+        waitTime = blendWait;
+      else if (activeIdx == 9)
+        waitTime = scaleWait;
+      else if (activeIdx != 1)
         waitTime = 100;
     }
     if (bLeft) {
@@ -1363,12 +1691,21 @@ static void ProcessTimeWeatherMenu() {
             (g_Weather2Index == 0) ? g_WeatherCount - 1 : g_Weather2Index - 1;
         break;
       case 5:
-        g_WeatherBlend -= 0.05f;
+        g_WeatherBlend -= 0.05f * blendMult;
         if (g_WeatherBlend < 0.0f)
           g_WeatherBlend = 0.0f;
         break;
+      case 9:
+        g_WorldTimeScale -= 0.01f * scaleMult;
+        if (g_WorldTimeScale < 0.01f)
+          g_WorldTimeScale = 0.01f;
+        break;
       }
-      if (activeIdx != 1)
+      if (activeIdx == 5)
+        waitTime = blendWait;
+      else if (activeIdx == 9)
+        waitTime = scaleWait;
+      else if (activeIdx != 1)
         waitTime = 100;
     }
   }
@@ -1380,54 +1717,41 @@ static void ProcessTimeWeatherMenu() {
 
 static void ProcessMiscMenu() {
   const float lineWidth = 300.0f;
-  const int lineCount = 8;
+  const int lineCount = 6;
   int activeIdx = 0;
 
+  // Misc now holds only Free Camera *mechanics* — how the flycam relates to
+  // the player ped. World/scene toggles (HUD, weather, etc.) live under
+  // "World & Scene". Misc is only reachable from the Free Camera menu, where
+  // the flycam is always engaged, so no freecam-active guards are needed.
   DWORD waitTime = 150;
   while (true) {
     DWORD maxTick = GetTickCount() + waitTime;
     do {
-      // Suppress phone & character wheel while menu is open
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 27, TRUE);   // INPUT_PHONE
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 172, TRUE);  // INPUT_PHONE_UP
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 173, TRUE);  // INPUT_PHONE_DOWN
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 174, TRUE);  // INPUT_PHONE_LEFT
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 175, TRUE);  // INPUT_PHONE_RIGHT
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 19, TRUE);   // INPUT_CHARACTER_WHEEL
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 166, TRUE);  // INPUT_SELECT_CHARACTER_MICHAEL
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 167, TRUE);  // INPUT_SELECT_CHARACTER_FRANKLIN
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 168, TRUE);  // INPUT_SELECT_CHARACTER_TREVOR
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 169, TRUE);  // INPUT_SELECT_CHARACTER_MULTIPLAYER
+      DisableMenuPhoneControls();
       DrawMenuLine("MISC SETTINGS", "", lineWidth, 15.0, 18.0, 0.0, 5.0, false,
                    true);
-      DrawMenuValue("Hide Game HUD", FormatBool(g_HideHUD), lineWidth, 9.0,
-                    60.0 + 0 * 36.0, 0.0, 9.0, activeIdx == 0);
-      DrawMenuValue("Hide Player Character", FormatBool(g_HidePlayer), lineWidth, 9.0,
-                    60.0 + 1 * 36.0, 0.0, 9.0, activeIdx == 1);
       DrawMenuValue("Move Player with Camera", FormatBool(g_MovePlayerWithCamera),
-                    lineWidth, 9.0, 60.0 + 2 * 36.0, 0.0, 9.0, activeIdx == 2);
+                    lineWidth, 9.0, 60.0 + 0 * 36.0, 0.0, 9.0, activeIdx == 0);
       DrawMenuValue("Save Position on Exit", FormatBool(g_RememberCamPosition),
-                    lineWidth, 9.0, 60.0 + 3 * 36.0, 0.0, 9.0, activeIdx == 3);
-      DrawMenuValue("Show Info Overlay", FormatBool(g_ShowInfoOverlay), lineWidth,
-                    9.0, 60.0 + 4 * 36.0, 0.0, 9.0, activeIdx == 4);
-      DrawMenuValue("Lock Camera Position", FormatBool(g_LockCamera), lineWidth, 9.0,
-                    60.0 + 5 * 36.0, 0.0, 9.0, activeIdx == 5);
+                    lineWidth, 9.0, 60.0 + 1 * 36.0, 0.0, 9.0, activeIdx == 1);
+      DrawMenuValue("Lock Camera Position", FormatBool(g_LockCamera), lineWidth,
+                    9.0, 60.0 + 2 * 36.0, 0.0, 9.0, activeIdx == 2);
       DrawMenuValue("Allow Player to Move", FormatBool(g_EnablePlayerMovement),
-                    lineWidth, 9.0, 60.0 + 6 * 36.0, 0.0, 9.0, activeIdx == 6);
-      DrawMenuValue("Disable Vehicle Shake", FormatBool(g_DisableVehicleShake),
-                    lineWidth, 9.0, 60.0 + 7 * 36.0, 0.0, 9.0, activeIdx == 7);
+                    lineWidth, 9.0, 60.0 + 3 * 36.0, 0.0, 9.0, activeIdx == 3);
+      DrawMenuValue("Snap Camera to Player", "Press Enter", lineWidth, 9.0,
+                    60.0 + 4 * 36.0, 0.0, 9.0, activeIdx == 4);
+      DrawMenuValue("Level Horizon (reset roll)", "Press Enter", lineWidth, 9.0,
+                    60.0 + 5 * 36.0, 0.0, 9.0, activeIdx == 5);
 
-      if (g_FreeCamActive)
-        UpdateFreeCamera();
-
-      UpdateStatusText();
-      UpdateGlobalEffects();
+      DrawMenuFooter();
+      MenuFrameTick();
       WAIT(0);
     } while (GetTickCount() < maxTick);
     waitTime = 0;
 
-    bool bSelect, bBack, bUp, bDown, bLeft, bRight;
-    GetMenuButtons(&bSelect, &bBack, &bUp, &bDown, &bLeft, &bRight);
+    bool bSelect, bBack, bUp, bDown;
+    GetMenuButtons(&bSelect, &bBack, &bUp, &bDown, NULL, NULL);
 
     if (bBack) {
       MenuBeep();
@@ -1448,18 +1772,6 @@ static void ProcessMiscMenu() {
       MenuBeep();
       switch (activeIdx) {
       case 0:
-        g_HideHUD = !g_HideHUD;
-        SetStatusText(g_HideHUD ? "HUD Hidden" : "HUD Visible");
-        break;
-      case 1:
-        g_HidePlayer = !g_HidePlayer;
-        SetStatusText(g_HidePlayer ? "Player Hidden" : "Player Visible");
-        break;
-      case 2:
-        if (!g_FreeCamActive) {
-          SetStatusText("This option is exclusively for Free Camera mode.");
-          break;
-        }
         g_MovePlayerWithCamera = !g_MovePlayerWithCamera;
         if (g_MovePlayerWithCamera && g_FollowMode == 1) {
           g_FollowMode = 0; // Prevent getting stuck in recursive lock
@@ -1467,33 +1779,16 @@ static void ProcessMiscMenu() {
         SetStatusText(g_MovePlayerWithCamera ? "Player follows camera"
                                              : "Player stay fixed");
         break;
-      case 3:
-        if (!g_FreeCamActive) {
-          SetStatusText("This option is exclusively for Free Camera mode.");
-          break;
-        }
+      case 1:
         g_RememberCamPosition = !g_RememberCamPosition;
         SetStatusText(g_RememberCamPosition ? "Camera position remembered"
                                             : "Camera resets on toggle");
         break;
-      case 4:
-        g_ShowInfoOverlay = !g_ShowInfoOverlay;
-        SetStatusText(g_ShowInfoOverlay ? "Info overlay shown"
-                                        : "Info overlay hidden");
-        break;
-      case 5:
-        if (!g_FreeCamActive) {
-          SetStatusText("This option is exclusively for Free Camera mode.");
-          break;
-        }
+      case 2:
         g_LockCamera = !g_LockCamera;
         SetStatusText(g_LockCamera ? "Camera locked" : "Camera unlocked");
         break;
-      case 6:
-        if (!g_FreeCamActive) {
-          SetStatusText("This option is exclusively for Free Camera mode.");
-          break;
-        }
+      case 3:
         g_EnablePlayerMovement = !g_EnablePlayerMovement;
         {
           Ped ped = PLAYER::PLAYER_PED_ID();
@@ -1508,10 +1803,124 @@ static void ProcessMiscMenu() {
         SetStatusText(g_EnablePlayerMovement ? "Player movement enabled"
                                              : "Player movement disabled");
         break;
-      case 7:
+      case 4:
+        SnapCameraToPlayer();
+        SetStatusText("Camera snapped to player");
+        break;
+      case 5:
+        LevelCameraHorizon();
+        SetStatusText("Horizon leveled (roll reset)");
+        break;
+      }
+      waitTime = 200;
+    }
+  }
+}
+
+// ============================================================
+//  Sub-Menu: World & Scene
+// ============================================================
+//
+// Shared hub for everything that isn't the camera itself — time, weather,
+// world freeze, HUD / player visibility, and the global Save Settings action.
+// Reachable from BOTH the Free Camera menu and the Camera Sequence menu so
+// you can dress the scene without leaving whichever camera you're driving.
+// Time & Weather is kept as its own sub-submenu (it's a dense screen with its
+// own hold-to-scrub time logic) rather than inlined here.
+
+static void ProcessWorldSceneMenu() {
+  const float lineWidth = 320.0f;
+  const int lineCount = 7;
+  int activeIdx = 0;
+  // "Reset to Defaults" arms on first Enter and commits on a second within a
+  // few seconds, so a stray click can't wipe a dialed-in setup.
+  DWORD resetArmedUntil = 0;
+
+  DWORD waitTime = 150;
+  while (true) {
+    DWORD maxTick = GetTickCount() + waitTime;
+    do {
+      DisableMenuPhoneControls();
+      DrawMenuLine("WORLD & SCENE", "", lineWidth, 15.0, 18.0, 0.0, 5.0, false,
+                   true);
+      DrawMenuValue("Time & Weather...", "", lineWidth, 9.0, 60.0 + 0 * 36.0,
+                    0.0, 9.0, activeIdx == 0);
+      DrawMenuValue("Hide Game HUD", FormatBool(g_HideHUD), lineWidth, 9.0,
+                    60.0 + 1 * 36.0, 0.0, 9.0, activeIdx == 1);
+      DrawMenuValue("Hide Player Character", FormatBool(g_HidePlayer), lineWidth,
+                    9.0, 60.0 + 2 * 36.0, 0.0, 9.0, activeIdx == 2);
+      DrawMenuValue("Disable Vehicle Shake", FormatBool(g_DisableVehicleShake),
+                    lineWidth, 9.0, 60.0 + 3 * 36.0, 0.0, 9.0, activeIdx == 3);
+      DrawMenuValue("Show Info Overlay", FormatBool(g_ShowInfoOverlay), lineWidth,
+                    9.0, 60.0 + 4 * 36.0, 0.0, 9.0, activeIdx == 4);
+      DrawMenuValue("Save Settings to INI", "Press Enter", lineWidth, 9.0,
+                    60.0 + 5 * 36.0, 0.0, 9.0, activeIdx == 5);
+      DrawMenuValue("Reset to Defaults",
+                    (GetTickCount() < resetArmedUntil) ? "Press again to confirm"
+                                                       : "Press Enter",
+                    lineWidth, 9.0, 60.0 + 6 * 36.0, 0.0, 9.0, activeIdx == 6);
+
+      DrawMenuFooter();
+      MenuFrameTick();
+      WAIT(0);
+    } while (GetTickCount() < maxTick);
+    waitTime = 0;
+
+    bool bSelect, bBack, bUp, bDown;
+    GetMenuButtons(&bSelect, &bBack, &bUp, &bDown, NULL, NULL);
+
+    if (bBack) {
+      MenuBeep();
+      break;
+    }
+    if (bUp) {
+      MenuBeep();
+      activeIdx = (activeIdx == 0) ? lineCount - 1 : activeIdx - 1;
+      waitTime = 150;
+    }
+    if (bDown) {
+      MenuBeep();
+      activeIdx = (activeIdx + 1) % lineCount;
+      waitTime = 150;
+    }
+
+    if (bSelect) {
+      MenuBeep();
+      switch (activeIdx) {
+      case 0:
+        ProcessTimeWeatherMenu();
+        break;
+      case 1:
+        g_HideHUD = !g_HideHUD;
+        SetStatusText(g_HideHUD ? "HUD Hidden" : "HUD Visible");
+        break;
+      case 2:
+        g_HidePlayer = !g_HidePlayer;
+        SetStatusText(g_HidePlayer ? "Player Hidden" : "Player Visible");
+        break;
+      case 3:
         g_DisableVehicleShake = !g_DisableVehicleShake;
         SetStatusText(g_DisableVehicleShake ? "Vehicle shake disabled"
                                             : "Vehicle shake enabled");
+        break;
+      case 4:
+        g_ShowInfoOverlay = !g_ShowInfoOverlay;
+        SetStatusText(g_ShowInfoOverlay ? "Info overlay shown"
+                                        : "Info overlay hidden");
+        break;
+      case 5:
+        SaveSettings();
+        SetStatusText("Settings saved to SimpleCamera.ini");
+        break;
+      case 6:
+        if (GetTickCount() < resetArmedUntil) {
+          ResetSettingsToDefaults();
+          resetArmedUntil = 0;
+          SetStatusText("Settings reset to defaults");
+        } else {
+          resetArmedUntil = GetTickCount() + 3000;
+          SetStatusText("Press Enter again to confirm reset");
+        }
         break;
       }
       waitTime = 200;
@@ -1548,20 +1957,14 @@ static void ProcessCameraEffectsMenu() {
   const int lineCount = 10;
   int activeIdx = 0;
 
+  DWORD holdStart = 0;
+  bool wasHolding = false;
+
   DWORD waitTime = 150;
   while (true) {
     DWORD maxTick = GetTickCount() + waitTime;
     do {
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 27, TRUE);
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 172, TRUE);
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 173, TRUE);
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 174, TRUE);
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 175, TRUE);
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 19, TRUE);
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 166, TRUE);
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 167, TRUE);
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 168, TRUE);
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 169, TRUE);
+      DisableMenuPhoneControls();
 
       DrawMenuLine("CAMERA EFFECTS", "", lineWidth, 15.0, 18.0, 0.0, 5.0, false,
                    true);
@@ -1592,11 +1995,8 @@ static void ProcessCameraEffectsMenu() {
       DrawMenuValue("Randomize Pattern", "Press Enter", lineWidth, 9.0,
                     60.0 + 9 * 36.0, 0.0, 9.0, activeIdx == 9);
 
-      if (g_FreeCamActive)
-        UpdateFreeCamera();
-
-      UpdateStatusText();
-      UpdateGlobalEffects();
+      DrawMenuFooter();
+      MenuFrameTick();
       WAIT(0);
     } while (GetTickCount() < maxTick);
     waitTime = 0;
@@ -1665,13 +2065,20 @@ static void ProcessCameraEffectsMenu() {
       }
     }
 
+    // Numeric rows (2-7, plus the variable-step Freq row) accelerate on hold;
+    // the Preset row (1) is an enum cycle and keeps a fixed repeat.
+    bool numericRow = activeIdx >= 2 && activeIdx <= 7;
+    DWORD adjWait = 100;
+    float mult = HoldAccel((bRight || bLeft) && numericRow, holdStart,
+                           wasHolding, &adjWait);
+
     if (bRight) {
       MenuBeep();
       if (activeIdx == 1) {
         int next = (g_ShakePreset + 1) % 5;
         ApplyShakePreset(next);
       } else if (activeIdx == 2) {
-        g_ShakeAmp += 0.05f;
+        g_ShakeAmp += 0.05f * mult;
         ClampShake();
         MarkShakeCustom();
       } else if (activeIdx == 3) {
@@ -1679,27 +2086,27 @@ static void ProcessCameraEffectsMenu() {
         float step = (g_ShakeFreq < 0.5f) ? 0.05f
                    : (g_ShakeFreq < 2.0f) ? 0.1f
                                           : 0.5f;
-        g_ShakeFreq += step;
+        g_ShakeFreq += step * mult;
         ClampShake();
         MarkShakeCustom();
       } else if (activeIdx == 4) {
-        g_ShakeSpeedAmpCoupling += 0.1f;
+        g_ShakeSpeedAmpCoupling += 0.1f * mult;
         ClampShake();
         MarkShakeCustom();
       } else if (activeIdx == 5) {
-        g_ShakeSpeedFreqCoupling += 0.1f;
+        g_ShakeSpeedFreqCoupling += 0.1f * mult;
         ClampShake();
         MarkShakeCustom();
       } else if (activeIdx == 6) {
-        g_ShakeRotWeight += 0.1f;
+        g_ShakeRotWeight += 0.1f * mult;
         ClampShake();
         MarkShakeCustom();
       } else if (activeIdx == 7) {
-        g_ShakePosWeight += 0.1f;
+        g_ShakePosWeight += 0.1f * mult;
         ClampShake();
         MarkShakeCustom();
       }
-      waitTime = 100;
+      waitTime = adjWait;
     }
     if (bLeft) {
       MenuBeep();
@@ -1708,7 +2115,7 @@ static void ProcessCameraEffectsMenu() {
         if (prev > 4) prev = 4;
         ApplyShakePreset(prev);
       } else if (activeIdx == 2) {
-        g_ShakeAmp -= 0.05f;
+        g_ShakeAmp -= 0.05f * mult;
         ClampShake();
         MarkShakeCustom();
       } else if (activeIdx == 3) {
@@ -1717,27 +2124,27 @@ static void ProcessCameraEffectsMenu() {
         float step = (g_ShakeFreq <= 0.5f) ? 0.05f
                    : (g_ShakeFreq <= 2.0f) ? 0.1f
                                            : 0.5f;
-        g_ShakeFreq -= step;
+        g_ShakeFreq -= step * mult;
         ClampShake();
         MarkShakeCustom();
       } else if (activeIdx == 4) {
-        g_ShakeSpeedAmpCoupling -= 0.1f;
+        g_ShakeSpeedAmpCoupling -= 0.1f * mult;
         ClampShake();
         MarkShakeCustom();
       } else if (activeIdx == 5) {
-        g_ShakeSpeedFreqCoupling -= 0.1f;
+        g_ShakeSpeedFreqCoupling -= 0.1f * mult;
         ClampShake();
         MarkShakeCustom();
       } else if (activeIdx == 6) {
-        g_ShakeRotWeight -= 0.1f;
+        g_ShakeRotWeight -= 0.1f * mult;
         ClampShake();
         MarkShakeCustom();
       } else if (activeIdx == 7) {
-        g_ShakePosWeight -= 0.1f;
+        g_ShakePosWeight -= 0.1f * mult;
         ClampShake();
         MarkShakeCustom();
       }
-      waitTime = 100;
+      waitTime = adjWait;
     }
   }
 }
@@ -1750,61 +2157,45 @@ static void ProcessCameraEffectsMenu() {
 
 static bool ProcessFreeCameraMenu() {
   const float lineWidth = 300.0f;
-  const int lineCount = 8;
+  const int lineCount = 7;
   int activeIdx = 0;
 
+  // Entering Free Camera mode *is* enabling the flycam — there's no manual
+  // toggle row anymore. Guard against any desync (e.g. menu reopened while
+  // somehow inactive) by ensuring the camera is live before we draw.
+  if (!g_FreeCamActive) {
+    InitFreeCamera();
+    SetStatusText("Simple Camera ON");
+  }
+
   static const char *lineCaption[lineCount] = {
-      "Toggle freecam", "Movement",       "Lens settings",
-      "Depth of field", "Camera effects", "Time & weather",
-      "Misc settings",  "Exit"};
+      "Movement",       "Lens settings", "Depth of field", "Camera effects",
+      "World & scene",  "Misc settings", "Exit"};
 
   DWORD waitTime = 150;
   while (true) {
     DWORD maxTick = GetTickCount() + waitTime;
     do {
-      // Suppress phone & character wheel while menu is open
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 27, TRUE);   // INPUT_PHONE
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 172, TRUE);  // INPUT_PHONE_UP
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 173, TRUE);  // INPUT_PHONE_DOWN
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 174, TRUE);  // INPUT_PHONE_LEFT
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 175, TRUE);  // INPUT_PHONE_RIGHT
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 19, TRUE);   // INPUT_CHARACTER_WHEEL
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 166, TRUE);  // INPUT_SELECT_CHARACTER_MICHAEL
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 167, TRUE);  // INPUT_SELECT_CHARACTER_FRANKLIN
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 168, TRUE);  // INPUT_SELECT_CHARACTER_TREVOR
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 169, TRUE);  // INPUT_SELECT_CHARACTER_MULTIPLAYER
+      DisableMenuPhoneControls();
 
       // Title bar
       std::string title = "SIMPLE CAMERA";
       DrawMenuLine(title, "", lineWidth, 15.0, 18.0, 0.0, 5.0, false, true);
 
-      // Menu items
+      // Menu items — all plain submenu rows now that the toggle is gone.
       for (int i = 0; i < lineCount; i++) {
         std::string cap = lineCaption[i];
-        // Show ON/OFF state for the toggle item using NativeUI formatting
-        if (i == 0) {
-          DrawMenuValue("Toggle freecam", FormatBool(g_FreeCamActive),
-                        lineWidth, i != activeIdx ? 9.0 : 11.0,
-                        (i != activeIdx ? 60.0 : 56.0) + i * 36.0, 0.0,
-                        i != activeIdx ? 9.0 : 7.0, i == activeIdx);
-        } else {
-          // Normal Submenus
-          if (i != activeIdx)
-            DrawMenuLine(cap, "", lineWidth, 9.0, 60.0 + i * 36.0, 0.0, 9.0,
-                         false, false);
-          else
-            DrawMenuLine(cap, "", lineWidth + 1.0, 11.0, 56.0 + i * 36.0, 0.0,
-                         7.0, true, false);
-        }
+        if (i != activeIdx)
+          DrawMenuLine(cap, "", lineWidth, 9.0, 60.0 + i * 36.0, 0.0, 9.0,
+                       false, false);
+        else
+          DrawMenuLine(cap, "", lineWidth + 1.0, 11.0, 56.0 + i * 36.0, 0.0,
+                       7.0, true, false);
       }
 
       // Keep camera/features alive while browsing the menu
-      if (g_FreeCamActive)
-        UpdateFreeCamera();
-
-      UpdateTimeWeather();
-      UpdateStatusText();
-      UpdateGlobalEffects();
+      DrawMenuFooter();
+      MenuFrameTick();
       WAIT(0);
     } while (GetTickCount() < maxTick);
     waitTime = 0;
@@ -1816,35 +2207,25 @@ static bool ProcessFreeCameraMenu() {
     if (bSelect) {
       MenuBeep();
       switch (activeIdx) {
-      case 0: // Toggle freecam
-        if (g_FreeCamActive) {
-          DestroyFreeCamera();
-          SetStatusText("Simple Camera OFF");
-        } else {
-          InitFreeCamera();
-          SetStatusText("Simple Camera ON");
-        }
-        waitTime = 200;
-        break;
-      case 1:
+      case 0:
         ProcessMovementMenu();
         break;
-      case 2:
+      case 1:
         ProcessLensMenu();
         break;
-      case 3:
+      case 2:
         ProcessDoFMenu();
         break;
-      case 4:
+      case 3:
         ProcessCameraEffectsMenu();
         break;
-      case 5:
-        ProcessTimeWeatherMenu();
+      case 4:
+        ProcessWorldSceneMenu();
         break;
-      case 6:
+      case 5:
         ProcessMiscMenu();
         break;
-      case 7:
+      case 6:
         // Exit → caller pops back to picker
         return true;
       }
@@ -1884,16 +2265,7 @@ static int ProcessModePickerMenu() {
   while (true) {
     DWORD maxTick = GetTickCount() + waitTime;
     do {
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 27, TRUE);
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 172, TRUE);
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 173, TRUE);
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 174, TRUE);
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 175, TRUE);
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 19, TRUE);
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 166, TRUE);
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 167, TRUE);
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 168, TRUE);
-      CONTROLS::DISABLE_CONTROL_ACTION(0, 169, TRUE);
+      DisableMenuPhoneControls();
 
       DrawMenuLine("SIMPLE CAMERA", "", lineWidth, 15.0, 18.0, 0.0, 5.0, false,
                    true);
@@ -1902,11 +2274,8 @@ static int ProcessModePickerMenu() {
       DrawMenuValue("Camera Sequence", "Keyframed animation", lineWidth, 9.0,
                     60.0 + 1 * 36.0, 0.0, 9.0, activeIdx == 1);
 
-      if (g_FreeCamActive && g_CameraMode != 1)
-        UpdateFreeCamera();
-      UpdateTimeWeather();
-      UpdateStatusText();
-      UpdateGlobalEffects();
+      DrawMenuFooter();
+      MenuFrameTick();
       WAIT(0);
     } while (GetTickCount() < maxTick);
     waitTime = 0;
@@ -1942,7 +2311,6 @@ static int ProcessModePickerMenu() {
 
 // Forward decl — full implementation appended below.
 static bool ProcessSequenceMenu();
-static void DisableMenuPhoneControls();
 static void ProcessPoseListMenu();
 static void ProcessPoseEditMenu(int poseIdx);
 static void ProcessEventListMenu();
@@ -1964,25 +2332,17 @@ static float EventValueStep(EffectKind k) {
   }
 }
 
-// Shared helper — every submenu suppresses the same controls
-static void DisableMenuPhoneControls() {
-  CONTROLS::DISABLE_CONTROL_ACTION(0, 27, TRUE);
-  CONTROLS::DISABLE_CONTROL_ACTION(0, 172, TRUE);
-  CONTROLS::DISABLE_CONTROL_ACTION(0, 173, TRUE);
-  CONTROLS::DISABLE_CONTROL_ACTION(0, 174, TRUE);
-  CONTROLS::DISABLE_CONTROL_ACTION(0, 175, TRUE);
-  CONTROLS::DISABLE_CONTROL_ACTION(0, 19, TRUE);
-  CONTROLS::DISABLE_CONTROL_ACTION(0, 166, TRUE);
-  CONTROLS::DISABLE_CONTROL_ACTION(0, 167, TRUE);
-  CONTROLS::DISABLE_CONTROL_ACTION(0, 168, TRUE);
-  CONTROLS::DISABLE_CONTROL_ACTION(0, 169, TRUE);
-}
-
 // ============================================================
 //  Top-level dispatch (called by script.cpp on F5)
 // ============================================================
 
 void ProcessConfigMenu() {
+  // Flag the menu as open for the whole time we're in here (covers every
+  // submenu). The guard clears it on every return path. UpdateFreeCamera uses
+  // it to stop the controller D-Pad from zooming while it navigates the menu.
+  g_MenuOpen = true;
+  struct MenuOpenGuard { ~MenuOpenGuard() { g_MenuOpen = false; } } _mog;
+
   while (true) {
     // First-time-ever F5: show picker. After that, F5 reopens the
     // remembered mode menu directly. Switching modes pops back here.
@@ -1993,7 +2353,14 @@ void ProcessConfigMenu() {
       if (g_FreeCamActive && chosen != 0) DestroyFreeCamera();
       if (Sequence_IsInMode() && chosen != 1) Sequence_ExitMode();
       g_CameraMode = chosen;
-      if (g_CameraMode == 1) Sequence_EnterMode();
+      if (g_CameraMode == 1) {
+        Sequence_EnterMode();
+      } else if (g_CameraMode == 0 && !g_FreeCamActive) {
+        // Picking Free Camera engages the flycam immediately — skips the
+        // old "pick mode -> open menu -> toggle freecam" three-step dance.
+        InitFreeCamera();
+        SetStatusText("Simple Camera ON");
+      }
     }
 
     bool wantSwitch = false;
@@ -2013,6 +2380,488 @@ void ProcessConfigMenu() {
 }
 
 // ============================================================
+//  Sequence → Render to Image Sequence (Phase 2)
+// ============================================================
+//
+// Deterministic offline render: step the playhead by exactly 1/fps, let the
+// scene settle (TAA / streaming), then ask the ReShade addon to grab the
+// frame — taking as long as each frame needs, independent of real FPS. World
+// entities are pinned so only the camera moves; the result is a numbered PNG
+// sequence ready for ffmpeg. (Camera-led shots; animations still creep under
+// entity-freeze, per the engine limits we established.)
+
+static float g_RenderFps = 60.0f;     // output frame rate
+static int g_RenderSettleFrames = 8;  // frames to wait per step before grabbing
+static int g_RenderFlushFrames = 3;   // clean frames after the banner, before grabbing
+static int g_RenderBlurSamples = 1;   // motion-blur sub-samples per frame (1 = off)
+static float g_RenderShutter = 0.5f;  // shutter window as a fraction of the frame interval
+static int g_RenderBlurStrength = 100; // % multiplier on the blur length (shutter window)
+static int g_RenderFormat = 0;        // 0 = PNG (lossless), 1 = JPEG (lightweight)
+static int g_RenderJpegQuality = 90;  // JPEG quality 1..100
+static float g_RenderSlowmo = 0.0f;   // capture time scale. 0 = AUTO: pick a safe
+                                      // value so each frame's capture work fits
+                                      // the 1/fps budget (synced stays in sync).
+                                      // >0 = fixed time scale.
+static int g_RenderSyncWorld = 0;     // 0 = Camera-led (static world, scrub +
+                                      // accumulation blur). 1 = Synced (play the
+                                      // world + camera on one clock so world
+                                      // motion matches camera speed exactly).
+static float g_RenderHighlightBoost = 0.3f; // 0..0.99 — highlight lift in blur accumulation
+
+// Centered progress banner. Only drawn on settle frames — never on the frame
+// the addon actually captures, so it can't bleed into the output.
+static void DrawRenderProgress(int done, int total, const char *folder) {
+  char buf[160];
+  sprintf_s(buf, "RENDERING  %d / %d   (Backspace = cancel)", done, total);
+  UI::SET_TEXT_FONT(0);
+  UI::SET_TEXT_SCALE(0.6f, 0.6f);
+  UI::SET_TEXT_COLOUR(255, 255, 255, 255);
+  UI::SET_TEXT_WRAP(0.0, 1.0);
+  UI::SET_TEXT_CENTRE(1);
+  UI::SET_TEXT_DROPSHADOW(0, 0, 0, 0, 0);
+  UI::SET_TEXT_EDGE(1, 0, 0, 0, 205);
+  UI::_SET_TEXT_ENTRY((char *)"STRING");
+  UI::_ADD_TEXT_COMPONENT_STRING((LPSTR)buf);
+  UI::_DRAW_TEXT(0.5f, 0.45f);
+}
+
+static void ProcessRenderToImages() {
+  CameraSequence *s = Sequence_Active();
+  if (!s || (int)s->poses.size() < 2) {
+    SetStatusText("Need at least 2 keyframes to render");
+    return;
+  }
+  if (!FxCapture_AddonPresent()) {
+    SetStatusText("Image rendering needs ReShade + IgcsConnector addon. "
+                  "Install both (see README), then restart.");
+    return;
+  }
+
+  float dur = Sequence_TotalDuration();
+  // Honor the sequence "Speed": it scales how fast the shot plays, so a render
+  // advances the timeline by `speed/fps` per output frame and produces
+  // `duration/speed * fps` frames. Speed > 1 = faster/shorter; < 1 = slower/
+  // longer. Works in both modes (Synced stays in sync because camera + world
+  // both advance by the same per-frame sequence step).
+  float renderSpeed = (s->playbackSpeed > 0.0001f) ? s->playbackSpeed : 1.0f;
+  const float stepT = renderSpeed / g_RenderFps; // sequence-time per output frame
+  int total = (int)(dur / renderSpeed * g_RenderFps + 0.5f);
+  if (total < 1) {
+    SetStatusText("Sequence too short to render");
+    return;
+  }
+
+  char folder[MAX_PATH];
+  if (!FxCapture_NewSequenceFolder(folder, sizeof(folder))) {
+    SetStatusText("Couldn't create output folder");
+    return;
+  }
+
+  int samples = g_RenderBlurSamples;
+  if (samples < 1) samples = 1;
+
+  // Save state we override during the render, restore on exit.
+  bool prevFreezeEnt = g_FreezeEntities;
+  bool prevHideHUD = g_HideHUD;
+  bool prevOverlay = g_ShowInfoOverlay;
+  bool prevMarkers = g_SequenceShowMarkers;
+  float prevTime = Sequence_CurrentTime();
+  if (Sequence_IsPlaying()) Sequence_Stop();
+
+  // Hide the keyframe markers / path preview — Sequence_FrameTick (used by the
+  // synced path) redraws them every frame, so they'd be baked into the output.
+  g_SequenceShowMarkers = false;
+
+  // Do NOT freeze entities — that pins positions but leaves wind-driven
+  // vegetation, cloth and particles running at full speed (they'd smear in
+  // motion blur and flicker between frames). Instead hold a low time scale so
+  // ALL physics slow uniformly; the camera is still scrubbed exactly each
+  // frame, independent of time scale.
+  g_FreezeEntities = false;
+  g_HideHUD = true;          // keep the HUD out of the frames
+  g_ShowInfoOverlay = false; // and our debug overlay
+  SetStatusText("", 0);      // clear any lingering status so it can't be captured
+
+  FxCapture_SetQuality(g_RenderJpegQuality);
+  FxCapture_SetHighlightBoost(g_RenderHighlightBoost);
+  const char *ext = (g_RenderFormat == 1) ? "jpg" : "png";
+
+  bool cancelled = false;
+  bool addonFail = false;
+  int progDone = 0;
+
+  if (!g_RenderSyncWorld) {
+    // ============================================================
+    //  Camera-led (static world) — deterministic scrub + accumulation blur.
+    //  World is held near-static (slow-mo); camera scrubbed exactly. Shake +
+    //  effect automation are evaluated per output frame from the timeline.
+    // ============================================================
+    Sequence_RenderEffectsBegin();
+
+    // Camera-led holds the world near-static; Auto just means a low fixed scale.
+    const float detSlowmo = (g_RenderSlowmo <= 0.0001f) ? 0.02f : g_RenderSlowmo;
+
+    auto renderTick = [&](float subT, bool drawBanner) {
+      g_RenderShakeTime = subT; // time-driven shake for this exact sub-sample
+      Sequence_SetCurrentTime(subT);
+      DisableMenuPhoneControls();
+      UpdateTimeWeather();
+      UpdateGlobalEffects();
+      GAMEPLAY::SET_TIME_SCALE(detSlowmo);
+      if (drawBanner) DrawRenderProgress(progDone, total, folder);
+      WAIT(0);
+    };
+
+    auto captureSample = [&](float subT, const char *path, int sc, int si) {
+      for (int k = 0; k < g_RenderSettleFrames; ++k) {
+        renderTick(subT, true);
+        bool bBack;
+        GetMenuButtons(NULL, &bBack, NULL, NULL, NULL, NULL);
+        if (bBack) { cancelled = true; return; }
+      }
+      for (int k = 0; k < g_RenderFlushFrames; ++k) renderTick(subT, false);
+      FxCapture_RequestSample(path, sc, si);
+      int guard = 0;
+      while (!FxCapture_IsLastDone() && guard < 300) {
+        renderTick(subT, false);
+        ++guard;
+      }
+      if (guard >= 300) addonFail = true;
+    };
+
+    for (int i = 0; i < total && !cancelled && !addonFail; ++i) {
+      progDone = i;
+      float t = (float)i * stepT; // sequence time for this output frame
+      Sequence_RenderEffectsApply(t);
+      char path[MAX_PATH];
+      sprintf_s(path, "%s\\frame_%06d.%s", folder, i, ext);
+
+      if (samples <= 1) {
+        captureSample(t, path, 1, 0);
+      } else {
+        float effShutter = g_RenderShutter * (g_RenderBlurStrength / 100.0f);
+        for (int j = 0; j < samples && !cancelled && !addonFail; ++j) {
+          float subT = t + ((float)j / (float)samples) * effShutter * stepT;
+          captureSample(subT, path, samples, j);
+        }
+      }
+    }
+
+    Sequence_RenderEffectsEnd();
+  } else {
+    // ============================================================
+    //  Synced (live world) — playback-driven. The sequence PLAYS at a slow
+    //  time scale, so the camera, world, shake and effect events all advance
+    //  on the SAME game clock and stay in lockstep. We grab a frame each time
+    //  playback crosses the next 1/fps mark → world motion matches camera
+    //  speed exactly. Motion blur (when enabled) accumulates M consecutive
+    //  live frames per output frame, so it blurs the WHOLE moving scene.
+    // ============================================================
+    int syncSamples = g_RenderBlurSamples;
+    if (syncSamples < 1) syncSamples = 1;
+
+    // Per-output-frame game-time budget = the sequence-time step between output
+    // frames (speed-scaled). If the capture work for one output frame consumes
+    // MORE than this, playback overshoots the next grid mark and the world runs
+    // fast. AUTO tunes the time scale to keep the work inside the budget.
+    const float budget = stepT;
+    const bool autoSlow = g_RenderSlowmo <= 0.0001f;
+    // curSlowmo is the live time scale stepDyn asserts; AUTO adapts it per frame.
+    float curSlowmo;
+    if (autoSlow) {
+      // Initial estimate from fps x work (assumes ~30 real fps; it self-corrects
+      // within a few frames from measured consumption anyway).
+      int workFrames = 2 + g_RenderFlushFrames + syncSamples;
+      curSlowmo = budget / ((float)workFrames * 0.033f) * 0.7f;
+      if (curSlowmo < 0.005f) curSlowmo = 0.005f;
+      if (curSlowmo > 0.2f) curSlowmo = 0.2f;
+    } else {
+      curSlowmo = g_RenderSlowmo;
+    }
+
+    float savedSpeed = s->playbackSpeed;
+    s->playbackSpeed = 1.0f; // 1:1 so output frame i maps to sequence time i/fps
+    Sequence_SetCurrentTime(0.0f);
+    Sequence_Play(); // Play snapshots/restores shake config itself
+
+    auto stepDyn = [&](bool banner) {
+      DisableMenuPhoneControls();
+      if (Sequence_IsInMode()) Sequence_FrameTick(); // camera+world+events+shake on one clock
+      UpdateTimeWeather();
+      UpdateGlobalEffects();
+      GAMEPLAY::SET_TIME_SCALE(curSlowmo); // reassert capture slow-mo
+      if (banner) DrawRenderProgress(progDone, total, folder);
+      WAIT(0);
+    };
+
+    int cap = 0;
+    while (cap < total && !cancelled && !addonFail) {
+      progDone = cap;
+      float target = (float)cap * stepT; // sequence time for this output frame
+      int safety = 0;
+      while (Sequence_CurrentTime() < target && !cancelled) {
+        stepDyn(true);
+        bool bBack;
+        GetMenuButtons(NULL, &bBack, NULL, NULL, NULL, NULL);
+        if (bBack) cancelled = true;
+        if (!Sequence_IsPlaying()) break; // playback hit the end
+        if (++safety > 20000) break;      // hard safety net
+      }
+      if (cancelled) break;
+      // Guarantee a couple of banner frames so progress is always visible —
+      // the advance loop above is skipped when the per-frame blur work has
+      // already overshot the grid mark.
+      for (int k = 0; k < 2 && !cancelled; ++k) {
+        stepDyn(true);
+        bool bBack;
+        GetMenuButtons(NULL, &bBack, NULL, NULL, NULL, NULL);
+        if (bBack) cancelled = true;
+      }
+      if (cancelled) break;
+      // Clean frames so the banner clears the pipeline before grabbing.
+      for (int k = 0; k < g_RenderFlushFrames; ++k) stepDyn(false);
+
+      char path[MAX_PATH];
+      sprintf_s(path, "%s\\frame_%06d.%s", folder, cap, ext);
+
+      // Measure how much game-time the capture work consumes so AUTO can adapt.
+      float tWorkStart = Sequence_CurrentTime();
+
+      // Accumulate `syncSamples` consecutive live frames. The world advances a
+      // little between each (slowed playback), so the addon's linear average
+      // becomes true full-scene motion blur. 1 = no blur.
+      for (int j = 0; j < syncSamples && !addonFail; ++j) {
+        FxCapture_RequestSample(path, syncSamples, j);
+        int guard = 0;
+        while (!FxCapture_IsLastDone() && guard < 300) { stepDyn(false); ++guard; }
+        if (guard >= 300) addonFail = true;
+      }
+
+      // AUTO: nudge the time scale so the per-frame work lands inside the
+      // budget. Too much consumed -> slow down (world was overshooting); plenty
+      // of headroom -> speed up (don't waste wall-clock). Self-correcting.
+      if (autoSlow) {
+        float consumed = Sequence_CurrentTime() - tWorkStart;
+        if (consumed > budget * 0.85f) curSlowmo *= 0.7f;
+        else if (consumed < budget * 0.40f) curSlowmo *= 1.15f;
+        if (curSlowmo < 0.003f) curSlowmo = 0.003f;
+        if (curSlowmo > 0.5f) curSlowmo = 0.5f;
+      }
+      ++cap;
+    }
+
+    Sequence_Stop();
+    s->playbackSpeed = savedSpeed;
+  }
+
+  // Restore.
+  g_RenderShakeTime = -1.0f; // back to live dt-driven shake
+  GAMEPLAY::SET_TIME_SCALE(1.0f);
+  g_FreezeEntities = prevFreezeEnt;
+  g_HideHUD = prevHideHUD;
+  g_ShowInfoOverlay = prevOverlay;
+  g_SequenceShowMarkers = prevMarkers;
+  Sequence_SetCurrentTime(prevTime);
+
+  if (addonFail) {
+    SetStatusText("Capture addon not responding — aborted");
+  } else if (cancelled) {
+    SetStatusText("Render cancelled");
+  } else {
+    char msg[96];
+    sprintf_s(msg, "Render complete: %d frames", total);
+    SetStatusText(msg);
+  }
+}
+
+// Common video frame rates for the Output FPS cycler.
+static const float kRenderFpsPresets[] = {24.0f, 25.0f,  30.0f,  48.0f,
+                                          50.0f, 60.0f, 120.0f, 240.0f};
+static const int kRenderFpsPresetCount =
+    (int)(sizeof(kRenderFpsPresets) / sizeof(kRenderFpsPresets[0]));
+
+static void CycleRenderFps(int dir) {
+  // Snap to the nearest preset, then step in `dir`.
+  int idx = 0;
+  float best = 1e9f;
+  for (int i = 0; i < kRenderFpsPresetCount; ++i) {
+    float d = fabsf(kRenderFpsPresets[i] - g_RenderFps);
+    if (d < best) { best = d; idx = i; }
+  }
+  idx += dir;
+  if (idx < 0) idx = 0;
+  if (idx >= kRenderFpsPresetCount) idx = kRenderFpsPresetCount - 1;
+  g_RenderFps = kRenderFpsPresets[idx];
+}
+
+// Motion-blur sample-count presets (1 = off).
+static const int kBlurPresets[] = {1, 2, 4, 8, 16, 32, 64};
+static const int kBlurPresetCount =
+    (int)(sizeof(kBlurPresets) / sizeof(kBlurPresets[0]));
+
+static void CycleBlurSamples(int dir) {
+  int idx = 0, best = 1 << 30;
+  for (int i = 0; i < kBlurPresetCount; ++i) {
+    int d = kBlurPresets[i] - g_RenderBlurSamples;
+    if (d < 0) d = -d;
+    if (d < best) { best = d; idx = i; }
+  }
+  idx += dir;
+  if (idx < 0) idx = 0;
+  if (idx >= kBlurPresetCount) idx = kBlurPresetCount - 1;
+  g_RenderBlurSamples = kBlurPresets[idx];
+}
+
+// Render settings submenu.
+static void ProcessRenderMenu() {
+  const float lineWidth = 340.0f;
+  const int lineCount = 12;
+  int activeIdx = 0;
+
+  DWORD waitTime = 150;
+  while (true) {
+    DWORD maxTick = GetTickCount() + waitTime;
+    do {
+      const bool synced = g_RenderSyncWorld != 0;
+      const bool samplesOn = g_RenderBlurSamples > 1;
+      const bool shutterApplies = samplesOn && !synced; // shutter/strength: camera-led only
+      DisableMenuPhoneControls();
+      DrawMenuLine("RENDER TO IMAGES", "", lineWidth, 15.0, 18.0, 0.0, 5.0,
+                   false, true);
+
+      DrawMenuValue("Render Mode",
+                    synced ? "Synced (live world)" : "Camera-led (static)",
+                    lineWidth, 9.0, 60.0 + 0 * 36.0, 0.0, 9.0, activeIdx == 0);
+
+      char fpsVal[48];
+      int frames = (int)(Sequence_TotalDuration() * g_RenderFps + 0.5f);
+      sprintf_s(fpsVal, "%d fps  -  %d frames", (int)g_RenderFps, frames);
+      DrawMenuValue("Output FPS", fpsVal, lineWidth, 9.0, 60.0 + 1 * 36.0, 0.0,
+                    9.0, activeIdx == 1);
+
+      DrawMenuValue("Settle Frames",
+                    synced ? std::string("n/a") : FormatInt(g_RenderSettleFrames),
+                    lineWidth, 9.0, 60.0 + 2 * 36.0, 0.0, 9.0, activeIdx == 2);
+      DrawMenuValue("Flush Frames", FormatInt(g_RenderFlushFrames), lineWidth,
+                    9.0, 60.0 + 3 * 36.0, 0.0, 9.0, activeIdx == 3);
+
+      // Motion blur works in BOTH modes now (synced accumulates live frames).
+      char blurVal[48];
+      if (!samplesOn) sprintf_s(blurVal, "Off");
+      else sprintf_s(blurVal, "%d samples", g_RenderBlurSamples);
+      DrawMenuValue("Motion Blur", blurVal, lineWidth, 9.0, 60.0 + 4 * 36.0, 0.0,
+                    9.0, activeIdx == 4);
+
+      // Shutter / Strength only meaningful for camera-led accumulation (synced
+      // blur spans consecutive live frames instead of a scrub window).
+      char shutterVal[32];
+      if (!shutterApplies) sprintf_s(shutterVal, "n/a");
+      else sprintf_s(shutterVal, "%d deg", (int)(g_RenderShutter * 360.0f + 0.5f));
+      DrawMenuValue("Shutter", shutterVal, lineWidth, 9.0, 60.0 + 5 * 36.0, 0.0,
+                    9.0, activeIdx == 5);
+
+      char strVal[24];
+      if (!shutterApplies) sprintf_s(strVal, "n/a");
+      else sprintf_s(strVal, "%d%%", g_RenderBlurStrength);
+      DrawMenuValue("Blur Strength", strVal, lineWidth, 9.0, 60.0 + 6 * 36.0,
+                    0.0, 9.0, activeIdx == 6);
+
+      // Highlight Boost — extra highlight lift in the linear blur accumulation
+      // (brighter streaks). Applies to blur in either mode.
+      char hbVal[24];
+      if (!samplesOn) sprintf_s(hbVal, "n/a");
+      else sprintf_s(hbVal, "%d%%", (int)(g_RenderHighlightBoost * 100.0f + 0.5f));
+      DrawMenuValue("Highlight Boost", hbVal, lineWidth, 9.0, 60.0 + 7 * 36.0,
+                    0.0, 9.0, activeIdx == 7);
+
+      DrawMenuValue("Format", g_RenderFormat == 1 ? "JPEG" : "PNG (lossless)",
+                    lineWidth, 9.0, 60.0 + 8 * 36.0, 0.0, 9.0, activeIdx == 8);
+      char qVal[24];
+      if (g_RenderFormat == 1) sprintf_s(qVal, "%d", g_RenderJpegQuality);
+      else sprintf_s(qVal, "n/a");
+      DrawMenuValue("JPEG Quality", qVal, lineWidth, 9.0, 60.0 + 9 * 36.0, 0.0,
+                    9.0, activeIdx == 9);
+
+      char slowmoVal[24];
+      if (g_RenderSlowmo <= 0.0001f) sprintf_s(slowmoVal, "Auto");
+      else sprintf_s(slowmoVal, "%d%%", (int)(g_RenderSlowmo * 100.0f + 0.5f));
+      DrawMenuValue("World Slow-mo", slowmoVal, lineWidth, 9.0, 60.0 + 10 * 36.0,
+                    0.0, 9.0, activeIdx == 10);
+
+      bool addonReady = FxCapture_AddonPresent();
+      DrawMenuValue("Start Render",
+                    addonReady ? "Press Enter" : "Needs ReShade + IGCS addon",
+                    lineWidth, 9.0, 60.0 + 11 * 36.0, 0.0, 9.0, activeIdx == 11);
+      // Persistent notice when the capture addon isn't loaded, so it's obvious
+      // why rendering won't work without drilling into Start.
+      if (!addonReady) {
+        UI::SET_TEXT_FONT(0);
+        UI::SET_TEXT_SCALE(0.0f, 0.30f);
+        UI::SET_TEXT_COLOUR(255, 200, 80, 255);
+        UI::SET_TEXT_CENTRE(1);
+        UI::SET_TEXT_DROPSHADOW(0, 0, 0, 0, 0);
+        UI::SET_TEXT_EDGE(1, 0, 0, 0, 205);
+        UI::_SET_TEXT_ENTRY((char *)"STRING");
+        UI::_ADD_TEXT_COMPONENT_STRING(
+            (LPSTR) "Rendering requires ReShade (add-on support) + "
+                    "IgcsConnector addon");
+        UI::_DRAW_TEXT(0.5f, 0.62f);
+      }
+
+      DrawMenuFooter();
+      MenuFrameTick();
+      WAIT(0);
+    } while (GetTickCount() < maxTick);
+    waitTime = 0;
+
+    bool bSelect, bBack, bUp, bDown, bLeft, bRight;
+    GetMenuButtons(&bSelect, &bBack, &bUp, &bDown, &bLeft, &bRight);
+
+    if (bBack) { MenuBeep(); break; }
+    if (bUp) { MenuBeep(); activeIdx = (activeIdx == 0) ? lineCount - 1 : activeIdx - 1; waitTime = 150; }
+    if (bDown) { MenuBeep(); activeIdx = (activeIdx + 1) % lineCount; waitTime = 150; }
+
+    if (bSelect) {
+      MenuBeep();
+      if (activeIdx == 0) g_RenderSyncWorld = g_RenderSyncWorld ? 0 : 1;
+      else if (activeIdx == 8) g_RenderFormat = (g_RenderFormat == 1) ? 0 : 1;
+      else if (activeIdx == 11) ProcessRenderToImages();
+      waitTime = 200;
+    }
+    if (bRight) {
+      MenuBeep();
+      if (activeIdx == 0) g_RenderSyncWorld = g_RenderSyncWorld ? 0 : 1;
+      else if (activeIdx == 1) CycleRenderFps(+1);
+      else if (activeIdx == 2) { if (++g_RenderSettleFrames > 60) g_RenderSettleFrames = 60; }
+      else if (activeIdx == 3) { if (++g_RenderFlushFrames > 20) g_RenderFlushFrames = 20; }
+      else if (activeIdx == 4) CycleBlurSamples(+1);
+      else if (activeIdx == 5) { g_RenderShutter += 0.05f; if (g_RenderShutter > 1.0f) g_RenderShutter = 1.0f; }
+      else if (activeIdx == 6) { g_RenderBlurStrength += 10; if (g_RenderBlurStrength > 200) g_RenderBlurStrength = 200; }
+      else if (activeIdx == 7) { g_RenderHighlightBoost += 0.05f; if (g_RenderHighlightBoost > 0.95f) g_RenderHighlightBoost = 0.95f; }
+      else if (activeIdx == 8) g_RenderFormat = (g_RenderFormat == 1) ? 0 : 1;
+      else if (activeIdx == 9) { g_RenderJpegQuality += 5; if (g_RenderJpegQuality > 100) g_RenderJpegQuality = 100; }
+      else if (activeIdx == 10) { if (g_RenderSlowmo < 0.0001f) g_RenderSlowmo = 0.01f; else { g_RenderSlowmo += 0.01f; if (g_RenderSlowmo > 1.0f) g_RenderSlowmo = 1.0f; } }
+      waitTime = 120;
+    }
+    if (bLeft) {
+      MenuBeep();
+      if (activeIdx == 0) g_RenderSyncWorld = g_RenderSyncWorld ? 0 : 1;
+      else if (activeIdx == 1) CycleRenderFps(-1);
+      else if (activeIdx == 2) { if (--g_RenderSettleFrames < 0) g_RenderSettleFrames = 0; }
+      else if (activeIdx == 3) { if (--g_RenderFlushFrames < 0) g_RenderFlushFrames = 0; }
+      else if (activeIdx == 4) CycleBlurSamples(-1);
+      else if (activeIdx == 5) { g_RenderShutter -= 0.05f; if (g_RenderShutter < 0.05f) g_RenderShutter = 0.05f; }
+      else if (activeIdx == 6) { g_RenderBlurStrength -= 10; if (g_RenderBlurStrength < 10) g_RenderBlurStrength = 10; }
+      else if (activeIdx == 7) { g_RenderHighlightBoost -= 0.05f; if (g_RenderHighlightBoost < 0.0f) g_RenderHighlightBoost = 0.0f; }
+      else if (activeIdx == 8) g_RenderFormat = (g_RenderFormat == 1) ? 0 : 1;
+      else if (activeIdx == 9) { g_RenderJpegQuality -= 5; if (g_RenderJpegQuality < 10) g_RenderJpegQuality = 10; }
+      else if (activeIdx == 10) { g_RenderSlowmo -= 0.01f; if (g_RenderSlowmo < 0.005f) g_RenderSlowmo = 0.0f; } // 0 = Auto
+      waitTime = 120;
+    }
+  }
+}
+
+// ============================================================
 //  Camera Sequence — main menu
 // ============================================================
 
@@ -2024,10 +2873,7 @@ static std::string FormatTimeSec(float t) {
 
 static bool ProcessSequenceMenu() {
   const float lineWidth = 320.0f;
-  // 18 rows. "Follow & Entity Lock..." sits between Close Loop and Show
-  // Markers so the lock-related controls cluster near the visual toggles.
-  // Hide HUD + Hide Player ride above Exit so the user can clean the
-  // viewport for composition without leaving Sequence mode.
+  // 18 rows. "World & Scene..." and "Render to Images..." ride just above Exit.
   //
   // The row count exceeds kMaxVisibleListRows (12), so we render through
   // the same scroll-window pattern that ProcessPoseListMenu / Movement
@@ -2037,6 +2883,12 @@ static bool ProcessSequenceMenu() {
   const int lineCount = 18;
   int activeIdx = 0;
   int scrollOffset = 0;
+
+  DWORD holdStart = 0;
+  bool wasHolding = false;
+  // "Delete Active Sequence" arms on first Enter, commits on a second press
+  // within a few seconds — guards against accidentally wiping a sequence.
+  DWORD deleteArmedUntil = 0;
 
   DWORD waitTime = 150;
   while (true) {
@@ -2128,8 +2980,10 @@ static bool ProcessSequenceMenu() {
         DrawMenuValue("New Sequence", "Press Enter", lineWidth, 9.0,
                       rowTop(9), 0.0, 9.0, activeIdx == 9);
       if (vis(10))
-        DrawMenuValue("Delete Active Sequence", "Press Enter", lineWidth, 9.0,
-                      rowTop(10), 0.0, 9.0, activeIdx == 10);
+        DrawMenuValue("Delete Active Sequence",
+                      (GetTickCount() < deleteArmedUntil) ? "Press again to confirm"
+                                                          : "Press Enter",
+                      lineWidth, 9.0, rowTop(10), 0.0, 9.0, activeIdx == 10);
       if (vis(11))
         DrawMenuValue("Save All to INI", "Press Enter", lineWidth, 9.0,
                       rowTop(11), 0.0, 9.0, activeIdx == 11);
@@ -2173,19 +3027,22 @@ static bool ProcessSequenceMenu() {
         DrawMenuValue("Show Markers", FormatBool(g_SequenceShowMarkers),
                       lineWidth, 9.0, rowTop(14), 0.0, 9.0,
                       activeIdx == 14);
-      // Visibility toggles. g_HidePlayer defaults to true the moment we
-      // enter Sequence mode (InitFreeCamera flips it); expose the
-      // toggle here so users can show the player ped while composing
-      // shots with the ped in frame. UpdateGlobalEffects (called every
-      // tick) applies the visibility state to the player ped, so the
-      // toggle takes effect instantly.
+      // World & Scene — shared hub for HUD / player visibility, time and
+      // weather. Replaces the old inline Hide HUD + Hide Player rows so the
+      // same controls (and now time/weather, previously unreachable from
+      // Sequence mode) live in one place across both camera modes.
       if (vis(15))
-        DrawMenuValue("Hide HUD", FormatBool(g_HideHUD), lineWidth, 9.0,
-                      rowTop(15), 0.0, 9.0, activeIdx == 15);
-      if (vis(16))
-        DrawMenuValue("Hide Player Character", FormatBool(g_HidePlayer),
-                      lineWidth, 9.0, rowTop(16), 0.0, 9.0,
-                      activeIdx == 16);
+        DrawMenuValue("World & Scene...", "", lineWidth, 9.0, rowTop(15), 0.0,
+                      9.0, activeIdx == 15);
+      // Render to Image Sequence — value shows the frame count at the current
+      // output fps so the user knows the size before committing.
+      if (vis(16)) {
+        char renderVal[48];
+        int frames = (int)(Sequence_TotalDuration() * g_RenderFps + 0.5f);
+        sprintf_s(renderVal, "%d fps  -  %d frames", (int)g_RenderFps, frames);
+        DrawMenuValue("Render to Images...", renderVal, lineWidth, 9.0,
+                      rowTop(16), 0.0, 9.0, activeIdx == 16);
+      }
       if (vis(17))
         DrawMenuValue("Exit", "Mode picker", lineWidth, 9.0,
                       rowTop(17), 0.0, 9.0, activeIdx == 17);
@@ -2196,9 +3053,8 @@ static bool ProcessSequenceMenu() {
       // every Free Camera submenu calls UpdateFreeCamera() in its draw
       // loop. This is what lets the user free-fly the camera while the
       // sequence menu is open AND lets playback animate live.
-      if (Sequence_IsInMode()) Sequence_FrameTick();
-      UpdateStatusText();
-      UpdateGlobalEffects();
+      DrawMenuFooter();
+      MenuFrameTick();
       WAIT(0);
     } while (GetTickCount() < maxTick);
     waitTime = 0;
@@ -2253,7 +3109,16 @@ static bool ProcessSequenceMenu() {
         break;
       }
       case 9: Sequence_New("Untitled"); SetStatusText("New sequence"); break;
-      case 10: Sequence_DeleteActive(); SetStatusText("Sequence deleted"); break;
+      case 10:
+        if (GetTickCount() < deleteArmedUntil) {
+          Sequence_DeleteActive();
+          deleteArmedUntil = 0;
+          SetStatusText("Sequence deleted");
+        } else {
+          deleteArmedUntil = GetTickCount() + 3000;
+          SetStatusText("Press Enter again to confirm delete");
+        }
+        break;
       case 11: Sequence_SaveAll(); SetStatusText("Saved to INI"); break;
       case 12: {
         int idx = Sequence_CloseLoop();
@@ -2272,17 +3137,22 @@ static bool ProcessSequenceMenu() {
                                             : "Markers hidden");
         break;
       case 15:
-        g_HideHUD = !g_HideHUD;
-        SetStatusText(g_HideHUD ? "HUD Hidden" : "HUD Visible");
+        ProcessWorldSceneMenu();
         break;
       case 16:
-        g_HidePlayer = !g_HidePlayer;
-        SetStatusText(g_HidePlayer ? "Player Hidden" : "Player Visible");
+        ProcessRenderMenu();
         break;
       case 17: return true; // Exit → return to mode picker
       }
       waitTime = 200;
     }
+
+    // Speed (4) and Time (5) are numeric and accelerate on hold; the sequence
+    // cycle (0) and Loop toggle (3) keep a fixed repeat.
+    bool numericRow = (activeIdx == 4 || activeIdx == 5);
+    DWORD adjWait = 100;
+    float mult = HoldAccel((bRight || bLeft) && numericRow, holdStart,
+                           wasHolding, &adjWait);
 
     if (bRight) {
       MenuBeep();
@@ -2291,12 +3161,12 @@ static bool ProcessSequenceMenu() {
       } else if (activeIdx == 3 && s) {
         s->loop = !s->loop;
       } else if (activeIdx == 4 && s) {
-        s->playbackSpeed += 0.1f;
+        s->playbackSpeed += 0.1f * mult;
         if (s->playbackSpeed > 8.0f) s->playbackSpeed = 8.0f;
       } else if (activeIdx == 5) {
-        Sequence_SetCurrentTime(Sequence_CurrentTime() + 0.1f);
+        Sequence_SetCurrentTime(Sequence_CurrentTime() + 0.1f * mult);
       }
-      waitTime = 100;
+      waitTime = adjWait;
     }
     if (bLeft) {
       MenuBeep();
@@ -2305,12 +3175,12 @@ static bool ProcessSequenceMenu() {
       } else if (activeIdx == 3 && s) {
         s->loop = !s->loop;
       } else if (activeIdx == 4 && s) {
-        s->playbackSpeed -= 0.1f;
+        s->playbackSpeed -= 0.1f * mult;
         if (s->playbackSpeed < 0.05f) s->playbackSpeed = 0.05f;
       } else if (activeIdx == 5) {
-        Sequence_SetCurrentTime(Sequence_CurrentTime() - 0.1f);
+        Sequence_SetCurrentTime(Sequence_CurrentTime() - 0.1f * mult);
       }
-      waitTime = 100;
+      waitTime = adjWait;
     }
   }
 }
@@ -2396,9 +3266,7 @@ static void ProcessSequenceFollowMenu() {
 
       // Follow Target row — shared with the Movement menu's display so
       // the user sees consistent labels everywhere.
-      std::string followStr = "None";
-      if (g_FollowMode == 1)      followStr = "Player";
-      else if (g_FollowMode == 2) followStr = "Aimed Entity";
+      std::string followStr = FollowModeName(g_FollowMode);
       DrawMenuValue("Follow Target", followStr, lineWidth, 9.0,
                     60.0 + 0 * 36.0, 0.0, 9.0, activeIdx == 0);
 
@@ -2462,36 +3330,7 @@ static void ProcessSequenceFollowMenu() {
         // entity under the crosshair so the user can see what they're
         // about to lock.
         if (g_FollowTargetEntity == 0) {
-          float posX, posY, posZ, pitch, yaw, roll;
-          GetCameraState(posX, posY, posZ, pitch, yaw, roll);
-          float yawRad = yaw * 0.0174532925f;
-          float pitchRad = pitch * 0.0174532925f;
-          float dirX = -sinf(yawRad) * cosf(pitchRad);
-          float dirY = cosf(yawRad) * cosf(pitchRad);
-          float dirZ = sinf(pitchRad);
-          float endX = posX + dirX * 1000.0f;
-          float endY = posY + dirY * 1000.0f;
-          float endZ = posZ + dirZ * 1000.0f;
-          // Flags 30 = vehicles(2) | peds(4) | ragdolls(8) | objects(16).
-          // The original Movement-menu raycast used 14 (no objects); we
-          // widen here so e.g. parked-prop scenery can also be locked.
-          int rayHandle = invoke<int>(0x377906D8A31E5586, posX, posY, posZ,
-                                      endX, endY, endZ, 30,
-                                      PLAYER::PLAYER_PED_ID(), 7);
-          int hit = 0, entityHit = 0;
-          Vector3 ignore1{}, ignore2{};
-          invoke<int>(0x3D87450E15D98694, rayHandle, &hit, &ignore1, &ignore2,
-                      &entityHit);
-          if (hit && entityHit != 0 && ENTITY::DOES_ENTITY_EXIST(entityHit) &&
-              (ENTITY::IS_ENTITY_A_PED(entityHit) ||
-               ENTITY::IS_ENTITY_A_VEHICLE(entityHit) ||
-               ENTITY::IS_ENTITY_AN_OBJECT(entityHit))) {
-            Vector3 entPos = ENTITY::GET_ENTITY_COORDS(entityHit, TRUE);
-            GRAPHICS::DRAW_MARKER(0, entPos.x, entPos.y, entPos.z + 1.25f, 0,
-                                  0, 0, 0, 0, 0, 0.4f, 0.4f, 0.4f, 255, 255,
-                                  255, 200, TRUE, TRUE, 2, FALSE, NULL, NULL,
-                                  FALSE);
-          }
+          DrawEntityHoverMarker(RaycastEntityFromCamera(30));
         }
       }
 
@@ -2524,9 +3363,8 @@ static void ProcessSequenceFollowMenu() {
 
       // Tick playback / free-cam every frame so the user can compose
       // shots while this menu is open (same pattern as ProcessPoseListMenu).
-      if (Sequence_IsInMode()) Sequence_FrameTick();
-      UpdateStatusText();
-      UpdateGlobalEffects();
+      DrawMenuFooter();
+      MenuFrameTick();
       WAIT(0);
     } while (GetTickCount() < maxTick);
     waitTime = 0;
@@ -2578,32 +3416,10 @@ static void ProcessSequenceFollowMenu() {
           SetStatusText("Entity unlocked");
         } else {
           // Raycast forward from the camera and lock onto whatever the
-          // user is aiming at. 14 = vehicles|peds|objects flags.
-          float posX, posY, posZ, pitch, yaw, roll;
-          GetCameraState(posX, posY, posZ, pitch, yaw, roll);
-          float yawRad = yaw * 0.0174532925f;
-          float pitchRad = pitch * 0.0174532925f;
-          float dirX = -sinf(yawRad) * cosf(pitchRad);
-          float dirY = cosf(yawRad) * cosf(pitchRad);
-          float dirZ = sinf(pitchRad);
-          float endX = posX + dirX * 1000.0f;
-          float endY = posY + dirY * 1000.0f;
-          float endZ = posZ + dirZ * 1000.0f;
-          // Flags 30 = vehicles(2) | peds(4) | ragdolls(8) | objects(16).
-          // The original Movement-menu raycast used 14 (no objects); we
-          // widen here so e.g. parked-prop scenery can also be locked.
-          int rayHandle = invoke<int>(0x377906D8A31E5586, posX, posY, posZ,
-                                      endX, endY, endZ, 30,
-                                      PLAYER::PLAYER_PED_ID(), 7);
-          int hit = 0, entityHit = 0;
-          Vector3 ignore1{}, ignore2{};
-          invoke<int>(0x3D87450E15D98694, rayHandle, &hit, &ignore1, &ignore2,
-                      &entityHit);
-          if (hit && entityHit != 0 && ENTITY::DOES_ENTITY_EXIST(entityHit) &&
-              (ENTITY::IS_ENTITY_A_PED(entityHit) ||
-               ENTITY::IS_ENTITY_A_VEHICLE(entityHit) ||
-               ENTITY::IS_ENTITY_AN_OBJECT(entityHit))) {
-            g_FollowTargetEntity = entityHit;
+          // user is aiming at. Flags 30 = vehicles|peds|ragdolls|objects.
+          int e = RaycastEntityFromCamera(30);
+          if (e != 0) {
+            g_FollowTargetEntity = e;
             SetStatusText("Locked onto entity");
           } else {
             g_FollowTargetEntity = 0;
@@ -2727,12 +3543,16 @@ static void ProcessPoseListMenu() {
   // Scroll offset survives the inner render/input loop iterations so the
   // viewport doesn't jump when the cursor wraps around the list.
   int scrollOffset = 0;
+  // Hold-to-accelerate state for the "Scale All Times" row.
+  DWORD holdStart = 0;
+  bool wasHolding = false;
 
   DWORD waitTime = 150;
   while (true) {
     CameraSequence *s = Sequence_Active();
     int poseCount = s ? (int)s->poses.size() : 0;
-    int lineCount = poseCount + 1; // + "Add at current pose"
+    // Row 0 = "Scale All Times"; rows 1..poseCount = keyframes; last = Add.
+    int lineCount = poseCount + 2;
     if (activeIdx >= lineCount) activeIdx = lineCount - 1;
     if (activeIdx < 0) activeIdx = 0;
     EnsureRowVisible(activeIdx, lineCount, scrollOffset);
@@ -2743,8 +3563,6 @@ static void ProcessPoseListMenu() {
     DWORD maxTick = GetTickCount() + waitTime;
     do {
       DisableMenuPhoneControls();
-      // Title bar shows logical range / total so the user always knows
-      // where they are even when only a slice is rendered.
       char title[64];
       if (lineCount > kMaxVisibleListRows) {
         sprintf_s(title, "POSE KEYFRAMES  [%d-%d / %d]", scrollOffset + 1,
@@ -2754,34 +3572,33 @@ static void ProcessPoseListMenu() {
       }
       DrawMenuLine(title, "", lineWidth, 15.0, 18.0, 0.0, 5.0, false, true);
 
-      // Render only the visible slice. visRow is the on-screen row index
-      // (0..kMaxVisibleListRows-1); i is the logical list index.
-      // Range info (X-Y / total) is in the title bar — that's enough to
-      // know how many items are hidden in each direction, so we don't
-      // draw separate "more above/below" indicator rows (they crowded
-      // the first/last list rows and Unicode arrows rendered as boxes
-      // in the GTA Chalet Comprime font).
       for (int i = scrollOffset; i < visEnd; ++i) {
         int visRow = i - scrollOffset;
         float top = 60.0f + visRow * 36.0f;
-        if (i < poseCount) {
-          const PoseKeyframe &p = s->poses[i];
+        if (i == 0) {
+          // Scale All Times — left/right stretches/compresses every keyframe
+          // (and event) time at once. Value shows the resulting duration.
+          char val[64];
+          sprintf_s(val, "total %.2fs   <- / ->", Sequence_TotalDuration());
+          DrawMenuValue("Scale All Times", val, lineWidth, 9.0, top, 0.0, 9.0,
+                        activeIdx == 0);
+        } else if (i <= poseCount) {
+          int pi = i - 1;
+          const PoseKeyframe &p = s->poses[pi];
           char label[64], val[96];
-          sprintf_s(label, "KF %d", i);
+          sprintf_s(label, "KF %d", pi);
           sprintf_s(val, "t=%.2fs  fov=%.0f  %s/%s", p.t, p.fov,
                     EaseName(p.ease), PathName(p.path));
           DrawMenuValue(label, val, lineWidth, 9.0, top, 0.0, 9.0,
                         activeIdx == i);
         } else {
-          // The trailing "+ Add" sentinel — same row, different content.
           DrawMenuValue("+ Add at current camera pose", "F6", lineWidth, 9.0,
                         top, 0.0, 9.0, activeIdx == i);
         }
       }
 
-      if (Sequence_IsInMode()) Sequence_FrameTick();
-      UpdateStatusText();
-      UpdateGlobalEffects();
+      DrawMenuFooter();
+      MenuFrameTick();
       WAIT(0);
     } while (GetTickCount() < maxTick);
     waitTime = 0;
@@ -2795,13 +3612,28 @@ static void ProcessPoseListMenu() {
 
     if (bSelect) {
       MenuBeep();
-      if (activeIdx == poseCount) {
+      if (activeIdx == 0) {
+        SetStatusText("Use Left/Right to stretch or compress all keyframe times");
+      } else if (activeIdx <= poseCount) {
+        ProcessPoseEditMenu(activeIdx - 1);
+      } else {
         int newIdx = Sequence_CapturePoseAtCurrentTime();
         if (newIdx >= 0) SetStatusText("Pose captured");
-      } else {
-        ProcessPoseEditMenu(activeIdx);
       }
       waitTime = 200;
+    }
+
+    // Left/right on the Scale row rewrites every keyframe + event time. Right
+    // stretches (slower / longer), left compresses (faster / shorter); inverse
+    // factors so they undo each other. Hold-to-accelerate for big changes.
+    DWORD adjWait = 100;
+    float mult = HoldAccel((bRight || bLeft) && activeIdx == 0, holdStart,
+                           wasHolding, &adjWait);
+    if (activeIdx == 0 && (bRight || bLeft)) {
+      MenuBeep();
+      float step = 1.0f + 0.02f * mult;
+      Sequence_ScaleTimes(bRight ? step : (1.0f / step));
+      waitTime = adjWait;
     }
   }
 }
@@ -2832,6 +3664,9 @@ static void ProcessPoseEditMenu(int poseIdx) {
   // leak the highlight after the editor closes.
   Sequence_SetEditingPose(poseIdx);
   struct ClearEditGuard { ~ClearEditGuard() { Sequence_SetEditingPose(-1); } } _g;
+
+  DWORD holdStart = 0;
+  bool wasHolding = false;
 
   DWORD waitTime = 150;
   while (true) {
@@ -2889,9 +3724,8 @@ static void ProcessPoseEditMenu(int poseIdx) {
       DrawMenuValue("Delete", "Press Enter", lineWidth, 9.0,
                     60.0 + IDX_DELETE * 36.0, 0.0, 9.0, activeIdx == IDX_DELETE);
 
-      if (Sequence_IsInMode()) Sequence_FrameTick();
-      UpdateStatusText();
-      UpdateGlobalEffects();
+      DrawMenuFooter();
+      MenuFrameTick();
       WAIT(0);
     } while (GetTickCount() < maxTick);
     waitTime = 0;
@@ -2977,34 +3811,39 @@ static void ProcessPoseEditMenu(int poseIdx) {
 
     // Left/right: nudge numeric values; cycle enums. Entity Lock, Recapture
     // and Delete rows ignore left/right — they're Enter-activated actions,
-    // not nudgeable values.
+    // not nudgeable values. The numeric rows (Time..FOV) accelerate on hold;
+    // the Ease / Path enums keep a fixed repeat.
+    bool numericRow = (activeIdx >= IDX_TIME && activeIdx <= IDX_FOV);
+    DWORD adjWait = 100;
+    float mult = HoldAccel((bRight || bLeft) && numericRow, holdStart,
+                           wasHolding, &adjWait);
     if (bRight) {
       MenuBeep();
-      if      (activeIdx == IDX_TIME)  { pose.t += 0.1f; if (pose.t < 0.0f) pose.t = 0.0f; }
-      else if (activeIdx == IDX_POSX)  pose.posX += 0.5f;
-      else if (activeIdx == IDX_POSY)  pose.posY += 0.5f;
-      else if (activeIdx == IDX_POSZ)  pose.posZ += 0.5f;
-      else if (activeIdx == IDX_PITCH) pose.pitch += 1.0f;
-      else if (activeIdx == IDX_YAW)   pose.yaw += 1.0f;
-      else if (activeIdx == IDX_ROLL)  pose.roll += 1.0f;
-      else if (activeIdx == IDX_FOV)   { pose.fov += 1.0f; if (pose.fov > 130.0f) pose.fov = 130.0f; }
+      if      (activeIdx == IDX_TIME)  { pose.t += 0.1f * mult; if (pose.t < 0.0f) pose.t = 0.0f; }
+      else if (activeIdx == IDX_POSX)  pose.posX += 0.5f * mult;
+      else if (activeIdx == IDX_POSY)  pose.posY += 0.5f * mult;
+      else if (activeIdx == IDX_POSZ)  pose.posZ += 0.5f * mult;
+      else if (activeIdx == IDX_PITCH) pose.pitch += 1.0f * mult;
+      else if (activeIdx == IDX_YAW)   pose.yaw += 1.0f * mult;
+      else if (activeIdx == IDX_ROLL)  pose.roll += 1.0f * mult;
+      else if (activeIdx == IDX_FOV)   { pose.fov += 1.0f * mult; if (pose.fov > 130.0f) pose.fov = 130.0f; }
       else if (activeIdx == IDX_EASE)  pose.ease = (EaseType)(((int)pose.ease + 1) % 5);
       else if (activeIdx == IDX_PATH)  pose.path = (PathType)(((int)pose.path + 1) % 2);
-      waitTime = 100;
+      waitTime = adjWait;
     }
     if (bLeft) {
       MenuBeep();
-      if      (activeIdx == IDX_TIME)  { pose.t -= 0.1f; if (pose.t < 0.0f) pose.t = 0.0f; }
-      else if (activeIdx == IDX_POSX)  pose.posX -= 0.5f;
-      else if (activeIdx == IDX_POSY)  pose.posY -= 0.5f;
-      else if (activeIdx == IDX_POSZ)  pose.posZ -= 0.5f;
-      else if (activeIdx == IDX_PITCH) pose.pitch -= 1.0f;
-      else if (activeIdx == IDX_YAW)   pose.yaw -= 1.0f;
-      else if (activeIdx == IDX_ROLL)  pose.roll -= 1.0f;
-      else if (activeIdx == IDX_FOV)   { pose.fov -= 1.0f; if (pose.fov < 5.0f) pose.fov = 5.0f; }
+      if      (activeIdx == IDX_TIME)  { pose.t -= 0.1f * mult; if (pose.t < 0.0f) pose.t = 0.0f; }
+      else if (activeIdx == IDX_POSX)  pose.posX -= 0.5f * mult;
+      else if (activeIdx == IDX_POSY)  pose.posY -= 0.5f * mult;
+      else if (activeIdx == IDX_POSZ)  pose.posZ -= 0.5f * mult;
+      else if (activeIdx == IDX_PITCH) pose.pitch -= 1.0f * mult;
+      else if (activeIdx == IDX_YAW)   pose.yaw -= 1.0f * mult;
+      else if (activeIdx == IDX_ROLL)  pose.roll -= 1.0f * mult;
+      else if (activeIdx == IDX_FOV)   { pose.fov -= 1.0f * mult; if (pose.fov < 5.0f) pose.fov = 5.0f; }
       else if (activeIdx == IDX_EASE)  pose.ease = (EaseType)(((int)pose.ease + 4) % 5);
       else if (activeIdx == IDX_PATH)  pose.path = (PathType)(((int)pose.path + 1) % 2);
-      waitTime = 100;
+      waitTime = adjWait;
     }
   }
 }
@@ -3062,9 +3901,8 @@ static void ProcessEventListMenu() {
         }
       }
 
-      if (Sequence_IsInMode()) Sequence_FrameTick();
-      UpdateStatusText();
-      UpdateGlobalEffects();
+      DrawMenuFooter();
+      MenuFrameTick();
       WAIT(0);
     } while (GetTickCount() < maxTick);
     waitTime = 0;
@@ -3121,6 +3959,9 @@ static void ProcessEventEditMenu(int eventIdx) {
   const int lineCount = 5;
   int activeIdx = 0;
 
+  DWORD holdStart = 0;
+  bool wasHolding = false;
+
   DWORD waitTime = 150;
   while (true) {
     CameraSequence *s = Sequence_Active();
@@ -3144,9 +3985,8 @@ static void ProcessEventEditMenu(int eventIdx) {
       DrawMenuValue("Delete", "Press Enter", lineWidth, 9.0, 60.0 + 4 * 36.0,
                     0.0, 9.0, activeIdx == 4);
 
-      if (Sequence_IsInMode()) Sequence_FrameTick();
-      UpdateStatusText();
-      UpdateGlobalEffects();
+      DrawMenuFooter();
+      MenuFrameTick();
       WAIT(0);
     } while (GetTickCount() < maxTick);
     waitTime = 0;
@@ -3173,25 +4013,35 @@ static void ProcessEventEditMenu(int eventIdx) {
       }
       waitTime = 200;
     }
+    // Time (0) and a continuous Value (2) accelerate on hold. The Effect-kind
+    // enum (1) and Mode toggle (3) keep a fixed repeat; integer-valued effect
+    // kinds (whose step is 1) aren't multiplied so they step one at a time.
+    float vstep = EventValueStep(ev.kind);
+    bool numericRow = (activeIdx == 0) || (activeIdx == 2 && vstep < 1.0f);
+    DWORD adjWait = 100;
+    float mult = HoldAccel((bRight || bLeft) && numericRow, holdStart,
+                           wasHolding, &adjWait);
+    if (activeIdx == 2 && vstep < 1.0f) vstep *= mult;
+
     if (bRight) {
       MenuBeep();
       switch (activeIdx) {
-      case 0: ev.t += 0.1f; break;
+      case 0: ev.t += 0.1f * mult; break;
       case 1: ev.kind = (EffectKind)(((int)ev.kind + 1) % EFX_COUNT); break;
-      case 2: ev.value += EventValueStep(ev.kind); break;
+      case 2: ev.value += vstep; break;
       case 3: ev.ramp = !ev.ramp; break;
       }
-      waitTime = 100;
+      waitTime = adjWait;
     }
     if (bLeft) {
       MenuBeep();
       switch (activeIdx) {
-      case 0: ev.t -= 0.1f; if (ev.t < 0.0f) ev.t = 0.0f; break;
+      case 0: ev.t -= 0.1f * mult; if (ev.t < 0.0f) ev.t = 0.0f; break;
       case 1: ev.kind = (EffectKind)(((int)ev.kind + EFX_COUNT - 1) % EFX_COUNT); break;
-      case 2: ev.value -= EventValueStep(ev.kind); break;
+      case 2: ev.value -= vstep; break;
       case 3: ev.ramp = !ev.ramp; break;
       }
-      waitTime = 100;
+      waitTime = adjWait;
     }
   }
 }

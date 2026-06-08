@@ -14,9 +14,14 @@
 
 // Settings
 void LoadSettings();
+void SaveSettings();
 
 // Menu toggle key
 bool IsMenuTogglePressed();
+
+// Controller combos (no keyboard on a pad). Edge-triggered, poll once per frame.
+bool IsControllerMenuCombo(); // LB + RB  -> open the menu
+bool IsControllerExitCombo(); // LB + B   -> exit Free Camera to the picker
 
 // Menu drawing helpers
 void DrawMenuLine(std::string caption, std::string value, float lineWidth,

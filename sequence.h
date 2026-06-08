@@ -149,6 +149,13 @@ void Sequence_FrameTick();
 // Is playback currently active (running, not paused)?
 bool Sequence_IsPlaying();
 
+// Offline render effect-event evaluation. Begin snapshots the live shake
+// config; Apply(t) evaluates all effect events up to t (like playback) so
+// shake automation takes effect in renders; End restores the snapshot.
+void Sequence_RenderEffectsBegin();
+void Sequence_RenderEffectsApply(float t);
+void Sequence_RenderEffectsEnd();
+
 // Total duration of the active sequence (max of last pose t and last event t).
 float Sequence_TotalDuration();
 
@@ -221,6 +228,10 @@ void Sequence_DeletePose(int poseIdx);
 void Sequence_AddEvent(EffectKind kind, float t, float value, bool ramp);
 void Sequence_DeleteEvent(int eventIdx);
 void Sequence_SortByTime(); // re-sort both arrays after time edits
+
+// Scale the time of all pose keyframes + effect events by `factor` (>1 = slower/
+// longer, <1 = faster/shorter). Rewrites the keyframe t values in place.
+void Sequence_ScaleTimes(float factor);
 
 // ============================================================
 //  Persistence (SimpleCamera_Sequences.ini)

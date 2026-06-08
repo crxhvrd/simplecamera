@@ -688,6 +688,21 @@ void Sequence_SetCurrentTime(float t) {
   }
 }
 
+// Destructively scale the time of EVERY pose keyframe and effect event in the
+// active sequence by `factor` (>1 stretches/slows the whole shot, <1 compresses/
+// speeds it) — unlike playbackSpeed, this rewrites the keyframe t values. The
+// playhead is scaled too so the cursor stays at the same relative position.
+void Sequence_ScaleTimes(float factor) {
+  if (factor <= 0.0f) return;
+  CameraSequence *s = Sequence_Active();
+  if (!s) return;
+  for (PoseKeyframe &p : s->poses) p.t *= factor;
+  for (EffectEvent &e : s->events) e.t *= factor;
+  s_PlaybackTime *= factor;
+  s_LastTickTime *= factor;
+  Sequence_SortByTime();
+}
+
 bool Sequence_IsPlaying() { return s_Playing; }
 
 void Sequence_Play() {
@@ -1182,6 +1197,41 @@ static void DriveEvents(const CameraSequence *s, float lastT, float nowT,
       ApplyEffectValue(e.kind, e.value);
     }
   }
+}
+
+// ============================================================
+//  Offline render: effect-event evaluation
+// ============================================================
+//
+// The renderer scrubs the timeline (Sequence_SetCurrentTime), which applies
+// the pose but never fires effect events — so shake automation (and other
+// SHAKE_* events) wouldn't take effect in a render. These helpers let the
+// renderer evaluate the effect state at each output-frame time, exactly as
+// playback would, while snapshotting/restoring the user's live shake config
+// so authoring state isn't clobbered.
+
+static float s_RenderEvtLastT = -1.0f;
+static bool s_RenderEvtFirst = true;
+
+void Sequence_RenderEffectsBegin() {
+  SaveShakeSnapshot();
+  s_RenderEvtLastT = -1.0f;
+  s_RenderEvtFirst = true;
+}
+
+// Apply all effect events up to time `t` (incrementally from the previous
+// call's time), matching playback's DriveEvents semantics — so one-shots like
+// Randomize fire once and ramps interpolate correctly.
+void Sequence_RenderEffectsApply(float t) {
+  CameraSequence *s = Sequence_Active();
+  if (!s) return;
+  DriveEvents(s, s_RenderEvtLastT, t, s_RenderEvtFirst);
+  s_RenderEvtLastT = t;
+  s_RenderEvtFirst = false;
+}
+
+void Sequence_RenderEffectsEnd() {
+  RestoreShakeSnapshot();
 }
 
 // ============================================================

@@ -117,7 +117,13 @@ bool g_HideHUD = false;
 bool g_DisableVehicleShake = false;
 bool g_HidePlayer = false;
 bool g_RememberCamPosition = false;
-bool g_FreezeWorld = false;
+bool g_FreezeWorld = false;     // Pause Game (SET_GAME_PAUSED)
+bool g_FreezeEntities = false;  // Freeze All Entities (camera stays live)
+float g_WorldTimeScale = 1.0f;
+// >= 0 while the offline renderer is running: shake is computed as a pure
+// function of this absolute time instead of the live dt accumulator, so it's
+// stable within a capture and advances exactly per frame / per sub-sample.
+float g_RenderShakeTime = -1.0f;
 bool g_ShowInfoOverlay = false;
 bool g_ShowLockedEntityMarker = true;
 
@@ -419,6 +425,41 @@ static void ComputeShakeOffsets(float dt, float &dx, float &dy, float &dz,
   dRoll = nr * rotMag;
 }
 
+// Deterministic shake as a pure function of absolute time `t` (seconds). Used
+// by the offline renderer: no dt accumulator, no speed coupling, no motion
+// gate — so the same `t` always yields the same offset (stable across the
+// settle/flush/grab frames of one capture), while advancing `t` per output
+// frame gives correct-speed shake and advancing it per sub-sample makes the
+// shake motion-blur along with everything else.
+static void ComputeShakeOffsetsAtTime(float t, float &dx, float &dy, float &dz,
+                                      float &dPitch, float &dYaw, float &dRoll) {
+  dx = dy = dz = dPitch = dYaw = dRoll = 0.0f;
+  if (!g_ShakeEnabled || g_ShakeAmp <= 0.0001f)
+    return;
+
+  const float TWO_PI = 2.0f * PI;
+  float phase = g_ShakeFreq * TWO_PI * t; // base frequency, no speed coupling
+
+  float nx  = ShakeNoise1D(phase * s_ShakeAxisFreqMul[0], s_ShakeSeeds[0]);
+  float ny  = ShakeNoise1D(phase * s_ShakeAxisFreqMul[1], s_ShakeSeeds[1]);
+  float nz  = ShakeNoise1D(phase * s_ShakeAxisFreqMul[2], s_ShakeSeeds[2]);
+  float np  = ShakeNoise1D(phase * s_ShakeAxisFreqMul[3], s_ShakeSeeds[3]);
+  float nyw = ShakeNoise1D(phase * s_ShakeAxisFreqMul[4], s_ShakeSeeds[4]);
+  float nr  = ShakeNoise1D(phase * s_ShakeAxisFreqMul[5], s_ShakeSeeds[5]);
+
+  const float POS_SCALE = 0.05f;
+  const float ROT_SCALE = 1.0f;
+  float posMag = g_ShakeAmp * POS_SCALE * g_ShakePosWeight;
+  float rotMag = g_ShakeAmp * ROT_SCALE * g_ShakeRotWeight;
+
+  dx = nx * posMag;
+  dy = ny * posMag;
+  dz = nz * posMag;
+  dPitch = np * rotMag;
+  dYaw = nyw * rotMag;
+  dRoll = nr * rotMag;
+}
+
 // ============================================================
 //  Init / Destroy
 // ============================================================
@@ -477,6 +518,57 @@ void InitFreeCamera() {
   g_FreeCamActive = true;
 }
 
+// Quick action — recall the flycam to just above the player ped. Handy when
+// you've flown far across the map and want to get back to the action. Keeps
+// the current look direction; only the position jumps.
+void SnapCameraToPlayer() {
+  if (!g_FreeCamActive)
+    return;
+  Ped ped = PLAYER::PLAYER_PED_ID();
+  Vector3 p = ENTITY::GET_ENTITY_COORDS(ped, TRUE);
+  s_PosX = p.x;
+  s_PosY = p.y;
+  s_PosZ = p.z + 2.0f;
+  // Don't let the big position jump spike the speed-coupled shake for a frame.
+  s_HasPrevPos = false;
+}
+
+// Quick action — zero the camera roll ("level the horizon"). Works in both the
+// Euler and Acrobatic engines: s_Pitch / s_Yaw are kept live in both (the acro
+// path writes them back via QuatToEuler each frame), so rebuilding the acro
+// quaternion with roll = 0 levels the shot without changing pitch or heading.
+void LevelCameraHorizon() {
+  g_CamRoll = 0.0f;
+  s_AcroMatrix = EulerToQuat(s_Pitch, s_Yaw, 0.0f);
+}
+
+// Freeze (or release) every dynamic entity in the world. SET_TIME_SCALE(0)
+// alone leaves a bit of residual creep — physics settling, vehicles rolling
+// to a stop, peds finishing a step. Pinning each entity's position with
+// FREEZE_ENTITY_POSITION removes that, giving a near-total freeze while the
+// camera and rendering stay live (unlike SET_GAME_PAUSED, which halts those
+// too). The player ped is skipped — free-cam manages its own freeze state.
+static void FreezeWorldEntities(bool freeze) {
+  const int kMax = 1024;
+  int pool[kMax];
+  Ped player = PLAYER::PLAYER_PED_ID();
+
+  int n = worldGetAllVehicles(pool, kMax);
+  for (int i = 0; i < n; i++)
+    if (ENTITY::DOES_ENTITY_EXIST(pool[i]))
+      ENTITY::FREEZE_ENTITY_POSITION(pool[i], freeze);
+
+  n = worldGetAllPeds(pool, kMax);
+  for (int i = 0; i < n; i++)
+    if (pool[i] != player && ENTITY::DOES_ENTITY_EXIST(pool[i]))
+      ENTITY::FREEZE_ENTITY_POSITION(pool[i], freeze);
+
+  n = worldGetAllObjects(pool, kMax);
+  for (int i = 0; i < n; i++)
+    if (ENTITY::DOES_ENTITY_EXIST(pool[i]))
+      ENTITY::FREEZE_ENTITY_POSITION(pool[i], freeze);
+}
+
 void DestroyFreeCamera() {
   if (!g_FreeCamActive)
     return;
@@ -500,11 +592,17 @@ void DestroyFreeCamera() {
   // Mark that we now have a saved position for next time
   s_HasSavedPosition = true;
 
-  // Restore time scale if frozen
+  // Leaving freecam: lift any freeze/slow-mo so the world resumes normally.
   if (g_FreezeWorld) {
-    GAMEPLAY::SET_TIME_SCALE(1.0f);
+    GAMEPLAY::SET_GAME_PAUSED(FALSE);
     g_FreezeWorld = false;
   }
+  if (g_FreezeEntities) {
+    FreezeWorldEntities(false);
+    g_FreezeEntities = false;
+  }
+  GAMEPLAY::SET_TIME_SCALE(1.0f);
+  g_WorldTimeScale = 1.0f;
 
   // Reset lock/movement flags
   g_LockCamera = false;
@@ -578,11 +676,14 @@ void UpdateFreeCamera() {
   if (!g_FreeCamActive)
     return;
 
-  // Use real-time delta when world is frozen, since GET_FRAME_TIME returns 0
+  // Use a real wall-clock delta when the world is frozen (GET_FRAME_TIME
+  // returns 0) OR slowed (GET_FRAME_TIME is scaled by the time scale, which
+  // would drag the camera down with the world). For cinematic slow-mo we want
+  // the world slow but the camera still flying at full, consistent speed.
   static DWORD s_LastFrameTick = 0;
   DWORD now = GetTickCount();
   float dt;
-  if (g_FreezeWorld) {
+  if (g_FreezeWorld || g_WorldTimeScale < 0.999f) {
     dt = (s_LastFrameTick > 0) ? (now - s_LastFrameTick) / 1000.0f : 0.016f;
   } else {
     dt = GAMEPLAY::GET_FRAME_TIME();
@@ -901,11 +1002,15 @@ void UpdateFreeCamera() {
         g_CamSpeed = 0.1f;
     }
 
-    // Controller D-pad up/down for zoom
-    if (PAD::IS_DISABLED_CONTROL_PRESSED(0, INPUT_FRONTEND_UP))
-      targetFovRate -= zoomRate;
-    if (PAD::IS_DISABLED_CONTROL_PRESSED(0, INPUT_FRONTEND_DOWN))
-      targetFovRate += zoomRate;
+    // Controller D-pad up/down for zoom — but NOT while a menu is open, since
+    // the D-Pad is the menu's navigation there and would otherwise zoom the
+    // FOV every time you move the cursor.
+    if (!g_MenuOpen) {
+      if (PAD::IS_DISABLED_CONTROL_PRESSED(0, INPUT_FRONTEND_UP))
+        targetFovRate -= zoomRate;
+      if (PAD::IS_DISABLED_CONTROL_PRESSED(0, INPUT_FRONTEND_DOWN))
+        targetFovRate += zoomRate;
+    }
 
     // Apply FOV — velocity-based inertia in drone mode, instant in standard
     static float s_DroneFovRate = 0.0f;
@@ -952,10 +1057,13 @@ void UpdateFreeCamera() {
     if (IsKeyDown(VK_CONTROL))
       moveUp -= 1.0f;
 
-    // Left shift = speed boost
+    // Left Shift = speed boost (turbo); Alt = precision (slow). Ctrl is taken
+    // by move-down, so Alt is the free modifier for fine framing moves.
     float speedMult = 1.0f;
     if (IsKeyDown(VK_SHIFT))
       speedMult = 3.0f;
+    else if (IsKeyDown(VK_MENU))
+      speedMult = 0.25f;
 
     // Normalize movement vector so diagonal flight isn't mathematically faster
     float moveLen = sqrtf(moveForward * moveForward + moveRight * moveRight +
@@ -1509,9 +1617,49 @@ void UpdateTimeWeather() {
 // ============================================================
 
 void UpdateGlobalEffects() {
-  // Freeze World
+  // Three independent world-speed controls:
+  //   - Pause Game (g_FreezeWorld): a true full halt via SET_GAME_PAUSED —
+  //     stops EVERYTHING including the camera, audio and rendering. Total
+  //     freeze; you can't fly while it's on. SET_THIS_SCRIPT_CAN_BE_PAUSED
+  //     keeps our script thread alive so the toggle can be lifted.
+  //   - Freeze All Entities (g_FreezeEntities): pins every ped/vehicle/object
+  //     in place but leaves time scale normal, so the camera, audio and
+  //     particles keep running — a "frozen actors, live camera" freeze.
+  //     Re-applied every frame to catch entities that stream in.
+  //   - Slow motion (g_WorldTimeScale): SET_TIME_SCALE(0.1..1.0), free camera
+  //     only and not in Sequence mode (sequences own the time scale via World
+  //     Speed effect events). Statics restore a 1.0 scale exactly once.
+  static bool s_GamePaused = false;
+  static bool s_EntitiesFrozen = false;
+  static bool s_SlowMoApplied = false;
+
+  // --- Pause Game (full halt) ---
   if (g_FreezeWorld) {
-    GAMEPLAY::SET_TIME_SCALE(0.0f);
+    GAMEPLAY::SET_THIS_SCRIPT_CAN_BE_PAUSED(FALSE);
+    GAMEPLAY::SET_GAME_PAUSED(TRUE);
+    s_GamePaused = true;
+  } else if (s_GamePaused) {
+    GAMEPLAY::SET_GAME_PAUSED(FALSE);
+    s_GamePaused = false;
+  }
+
+  // --- Freeze All Entities (camera stays live) ---
+  if (g_FreezeEntities) {
+    FreezeWorldEntities(true); // every frame, to catch newly streamed entities
+    s_EntitiesFrozen = true;
+  } else if (s_EntitiesFrozen) {
+    FreezeWorldEntities(false);
+    s_EntitiesFrozen = false;
+  }
+
+  // --- Slow motion ---
+  if (!g_FreezeWorld && g_FreeCamActive && g_CameraMode != 1 &&
+      g_WorldTimeScale < 0.999f) {
+    GAMEPLAY::SET_TIME_SCALE(g_WorldTimeScale);
+    s_SlowMoApplied = true;
+  } else if (s_SlowMoApplied) {
+    GAMEPLAY::SET_TIME_SCALE(1.0f);
+    s_SlowMoApplied = false;
   }
 
   // Info Overlay
@@ -1734,7 +1882,13 @@ void SequencePushToEngine(float dt) {
   // shake works (speed = position derivative due to playback motion).
   float shakeDx = 0, shakeDy = 0, shakeDz = 0;
   float shakePitchD = 0, shakeYawD = 0, shakeRollD = 0;
-  if (dt > 0.0f) {
+  if (g_RenderShakeTime >= 0.0f) {
+    // Offline render: deterministic, time-driven shake (stable per capture,
+    // advances per frame / sub-sample). dt is 0 here (scrub), so the live
+    // accumulator path below is intentionally skipped.
+    ComputeShakeOffsetsAtTime(g_RenderShakeTime, shakeDx, shakeDy, shakeDz,
+                              shakePitchD, shakeYawD, shakeRollD);
+  } else if (dt > 0.0f) {
     ComputeShakeOffsets(dt, shakeDx, shakeDy, shakeDz, shakePitchD,
                         shakeYawD, shakeRollD);
     s_PrevPosX = s_PosX;

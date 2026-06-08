@@ -8,6 +8,7 @@
 
 #include "script.h"
 #include "camera.h"
+#include "fx_capture.h"
 #include "igcs_bridge.h"
 #include "keyboard.h"
 #include "menu.h"
@@ -26,33 +27,47 @@ void main() {
   // Detect if running in FiveM
   DetectFiveM();
 
-  // Load INI settings
+  // Load INI settings — populates camera/shake/DoF/misc tunables from
+  // SimpleCamera.ini, falling back to the global initializers in camera.cpp
+  // when a key is absent. Must run before the main loop so a saved setup is
+  // live from the first frame.
   LoadSettings();
   // Load any persisted camera sequences
   Sequence_LoadAll();
 
-  // Reset defaults
+  // Map the shared capture channel so the ReShade addon can write frames.
+  FxCapture_Init();
+
+  // Never start with the free camera already engaged, regardless of what was
+  // persisted — the user always toggles it on explicitly (or via the picker).
   g_FreeCamActive = false;
-  g_CamSpeed = 1.0f;
-  g_CamSensitivity = 1.0f;
-  g_CamFOV = 50.0f;
-  g_CamRoll = 0.0f;
-  g_ZoomSpeed = 1.0f;
-  g_DoFEnabled = false;
-  g_DoFFocusDist = 10.0f;
-  g_DoFMaxNearInFocus = 0.5f;
-  g_TimePaused = false;
-  g_TimeHour = 12;
-  g_TimeMinute = 0;
-  g_Weather1Index = 0;
-  g_Weather2Index = 1;
-  g_WeatherBlend = 0.0f;
 
   while (true) {
-    // Check for menu toggle (F5)
-    if (IsMenuTogglePressed()) {
+    // Check for menu toggle — F5 on keyboard, or LB+RB on a controller (a pad
+    // has no menu key otherwise).
+    if (IsMenuTogglePressed() || IsControllerMenuCombo()) {
       MenuBeep();
       ProcessConfigMenu();
+    }
+
+    // Controller LB+B exits Free Camera straight back to the picker, so pad
+    // users can bail without opening the menu.
+    if (g_CameraMode == 0 && g_FreeCamActive && IsControllerExitCombo()) {
+      MenuBeep();
+      DestroyFreeCamera();
+      g_CameraMode = -1;
+    }
+
+    // F10 — Phase 1 capture test: ask the ReShade addon to write the current
+    // frame to a PNG under SimpleCamera_Captures. Press while flying (menu
+    // closed) for a clean frame.
+    if (IsKeyJustUp(VK_F10)) {
+      char savedPath[MAX_PATH];
+      if (FxCapture_CaptureTest(savedPath, sizeof(savedPath))) {
+        SetStatusText("Frame capture requested");
+      } else {
+        SetStatusText("Capture channel unavailable (addon not loaded?)");
+      }
     }
 
     // Mode dispatch — Free Camera and Camera Sequence are mutually exclusive

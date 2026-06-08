@@ -91,11 +91,20 @@ extern bool g_HideHUD;
 extern bool g_DisableVehicleShake;
 extern bool g_HidePlayer;
 extern bool g_RememberCamPosition;
-extern bool g_FreezeWorld;
+extern bool g_FreezeWorld;     // Pause Game (SET_GAME_PAUSED) — full halt
+extern bool g_FreezeEntities;  // Freeze All Entities — camera/audio stay live
+extern float g_WorldTimeScale; // slow-motion 0.01..1.0 (1.0 = real time)
+extern float g_RenderShakeTime; // >=0 during offline render: time-driven shake
 extern bool g_ShowInfoOverlay;
 extern bool g_ShowLockedEntityMarker;
 
 extern bool g_IsFiveM;
+
+// True while a configuration menu is open (ProcessConfigMenu running). The
+// camera keeps updating so you can compose with the menu up, but input that
+// the menu also consumes (controller D-Pad = zoom vs. menu navigation) is
+// suppressed in UpdateFreeCamera to avoid double-acting.
+extern bool g_MenuOpen;
 
 // ---- Mode dispatcher ----
 // 0 = Free Camera, 1 = Camera Sequence, -1 = no mode chosen yet (show picker)
@@ -136,6 +145,10 @@ void DetectFiveM();
 void InitFreeCamera();
 void DestroyFreeCamera();
 void UpdateFreeCamera();
+
+// Quick camera actions (Misc menu)
+void SnapCameraToPlayer();
+void LevelCameraHorizon();
 void UpdateTimeWeather();
 void UpdateGlobalEffects();
 void DrawInfoOverlay();

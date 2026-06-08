@@ -51,8 +51,245 @@
 #include "ReshadeStateController.h"
 #include "ThreadSafeQueue.h"
 #include "WorkItem.h"
+#include "fpng.h"
+#include "std_image_write.h" // declarations only; impl lives in ScreenshotController.cpp
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <vector>
 
 using namespace reshade::api;
+
+// ============================================================
+//  Simple Camera — Frame Capture Bridge (Phase 1 PoC)
+//
+//  The Simple Camera ASI requests frame grabs over a named shared-memory
+//  block (both DLLs live in GTA5.exe). On each present we check the request
+//  counter; if it changed, grab the back buffer via ReShade's backend-
+//  agnostic capture_screenshot(), pack RGBA->RGB and write a PNG with fpng
+//  (same path ScreenshotController uses), then echo the counter back.
+//  Layout MUST match fx_capture.h in the ASI project.
+// ============================================================
+#pragma pack(push, 4)
+struct SC_FxCaptureBlock
+{
+	uint32_t magic;       // 'SCFX' (0x53434658)
+	uint32_t version;
+	uint32_t requestId;   // ASI -> addon
+	uint32_t ackId;       // addon -> ASI
+	uint32_t status;      // 0 ok, 1 capture failed, 2 write failed
+	uint32_t width;
+	uint32_t height;
+	uint32_t sampleCount;   // motion-blur samples (1 = none)
+	uint32_t sampleIndex;   // 0..sampleCount-1
+	uint32_t quality;       // JPEG quality 1..100 (ignored for PNG)
+	float    highlightBoost; // 0..~1 — extra highlight lift in linear accumulation
+	uint32_t addonHeartbeat; // we bump this every present so the ASI knows we're loaded
+	char outPath[512];
+};
+#pragma pack(pop)
+
+static HANDLE g_scFxMapHandle = nullptr;
+static SC_FxCaptureBlock* g_scFxBlock = nullptr;
+static uint32_t g_scFxLastSeen = 0;
+static bool g_scFxFpngInit = false;
+
+// Motion-blur accumulation buffer (CPU). We accumulate in LINEAR light (not
+// sRGB) so highlights keep their energy and streak bright instead of being
+// averaged down to grey — optionally with an extra highlight lift. Floats so
+// the boosted linear values don't clip during summation.
+static std::vector<float> g_scFxAccum;
+static uint32_t g_scFxAccumW = 0;
+static uint32_t g_scFxAccumH = 0;
+
+// sRGB(0..255) -> linear LUT, built once.
+static float g_scFxSrgb2Lin[256];
+static bool g_scFxLutReady = false;
+static void sc_fxBuildLut()
+{
+	for (int i = 0; i < 256; ++i)
+	{
+		float c = i / 255.0f;
+		g_scFxSrgb2Lin[i] = (c <= 0.04045f) ? (c / 12.92f)
+		                                    : powf((c + 0.055f) / 1.055f, 2.4f);
+	}
+	g_scFxLutReady = true;
+}
+
+// linear (0..1+) -> sRGB 8-bit.
+static inline uint8_t sc_fxLin2Srgb8(float lin)
+{
+	if (lin <= 0.0f) return 0;
+	if (lin >= 1.0f) return 255;
+	float s = (lin <= 0.0031308f) ? (lin * 12.92f)
+	                              : (1.055f * powf(lin, 1.0f / 2.4f) - 0.055f);
+	int v = (int)(s * 255.0f + 0.5f);
+	return (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
+}
+
+// True if `path` ends (case-insensitively) with `.jpg` or `.jpeg`.
+static bool sc_fxIsJpegPath(const char* path)
+{
+	const size_t n = strlen(path);
+	if (n >= 4 && _stricmp(path + n - 4, ".jpg") == 0) return true;
+	if (n >= 5 && _stricmp(path + n - 5, ".jpeg") == 0) return true;
+	return false;
+}
+
+// Write tight RGB to `path`, picking the encoder from the extension: JPEG via
+// stb (with `quality`) for .jpg/.jpeg, otherwise PNG via fpng. Returns 0 on
+// success, 2 on failure.
+static uint32_t sc_fxWriteImage(const char* path, const uint8_t* rgb, uint32_t w, uint32_t h, uint32_t quality)
+{
+	if (sc_fxIsJpegPath(path))
+	{
+		int q = (int)quality;
+		if (q < 1) q = 1;
+		if (q > 100) q = 100;
+		return stbi_write_jpg(path, (int)w, (int)h, 3, rgb, q) != 0 ? 0u : 2u;
+	}
+
+	if (!g_scFxFpngInit)
+	{
+		fpng::fpng_init();
+		g_scFxFpngInit = true;
+	}
+	std::vector<uint8_t> encoded;
+	if (!fpng::fpng_encode_image_to_memory(rgb, w, h, 3, encoded))
+	{
+		return 2;
+	}
+	FILE* f = nullptr;
+	if (fopen_s(&f, path, "wb") != 0 || f == nullptr)
+	{
+		return 2;
+	}
+	fwrite(encoded.data(), encoded.size(), 1, f);
+	fclose(f);
+	return 0;
+}
+
+static void sc_fxCaptureTick(effect_runtime* runtime)
+{
+	// Lazily map the shared block (the ASI may map it first, or we do).
+	if (g_scFxBlock == nullptr)
+	{
+		g_scFxMapHandle = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
+		                                     0, sizeof(SC_FxCaptureBlock), "Local\\SimpleCameraFxCapture");
+		if (g_scFxMapHandle == nullptr)
+		{
+			return;
+		}
+		g_scFxBlock = reinterpret_cast<SC_FxCaptureBlock*>(
+			MapViewOfFile(g_scFxMapHandle, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(SC_FxCaptureBlock)));
+		if (g_scFxBlock == nullptr)
+		{
+			return;
+		}
+		// Don't fire a stale request that predates us mapping in.
+		g_scFxLastSeen = g_scFxBlock->requestId;
+	}
+
+	if (g_scFxBlock->magic != 0x53434658u)
+	{
+		return; // ASI side hasn't stamped the header yet
+	}
+
+	// Heartbeat so the ASI can tell this addon is loaded (gates rendering).
+	g_scFxBlock->addonHeartbeat++;
+
+	const uint32_t req = g_scFxBlock->requestId;
+	if (req == g_scFxLastSeen)
+	{
+		return; // nothing requested
+	}
+	g_scFxLastSeen = req;
+
+	const uint32_t sampleCount = (g_scFxBlock->sampleCount < 1) ? 1 : g_scFxBlock->sampleCount;
+	const uint32_t sampleIndex = g_scFxBlock->sampleIndex;
+
+	uint32_t width = 0, height = 0;
+	runtime->get_screenshot_width_and_height(&width, &height);
+	if (width == 0 || height == 0)
+	{
+		g_scFxBlock->status = 1;
+		g_scFxBlock->ackId = req;
+		return;
+	}
+
+	std::vector<uint8_t> shot(static_cast<size_t>(width) * height * 4);
+	runtime->capture_screenshot(shot.data());
+	// shot is BGRA on this backend (GTA Enhanced / DX12).
+
+	uint32_t status = 0;
+
+	if (sampleCount <= 1)
+	{
+		// Single capture: swap B<->R while packing down to tight RGB, then write.
+		for (uint32_t i = 0; i < width * height; ++i)
+		{
+			const uint8_t b = shot[4 * i + 0];
+			const uint8_t g = shot[4 * i + 1];
+			const uint8_t r = shot[4 * i + 2];
+			shot[3 * i + 0] = r;
+			shot[3 * i + 1] = g;
+			shot[3 * i + 2] = b;
+		}
+		status = sc_fxWriteImage(g_scFxBlock->outPath, shot.data(), width, height, g_scFxBlock->quality);
+	}
+	else
+	{
+		// Motion-blur accumulation in LINEAR light, with optional highlight
+		// boost (AccentuateWhites-style: y = x / (1.001 - b*x)). Reset on the
+		// first sample (or if the size changed).
+		if (!g_scFxLutReady) sc_fxBuildLut();
+		const float b = (g_scFxBlock->highlightBoost < 0.0f) ? 0.0f
+		              : (g_scFxBlock->highlightBoost > 0.99f) ? 0.99f
+		                                                      : g_scFxBlock->highlightBoost;
+		const size_t count = static_cast<size_t>(width) * height * 3;
+		if (sampleIndex == 0 || g_scFxAccumW != width || g_scFxAccumH != height)
+		{
+			g_scFxAccum.assign(count, 0.0f);
+			g_scFxAccumW = width;
+			g_scFxAccumH = height;
+		}
+		for (uint32_t i = 0; i < width * height; ++i)
+		{
+			float r = g_scFxSrgb2Lin[shot[4 * i + 2]];
+			float g = g_scFxSrgb2Lin[shot[4 * i + 1]];
+			float bl = g_scFxSrgb2Lin[shot[4 * i + 0]];
+			if (b > 0.0f)
+			{
+				r  = r  / (1.001f - b * r);
+				g  = g  / (1.001f - b * g);
+				bl = bl / (1.001f - b * bl);
+			}
+			g_scFxAccum[3 * i + 0] += r;
+			g_scFxAccum[3 * i + 1] += g;
+			g_scFxAccum[3 * i + 2] += bl;
+		}
+
+		if (sampleIndex >= sampleCount - 1)
+		{
+			// Final sample: average in linear, undo the highlight boost, then
+			// encode back to sRGB.
+			std::vector<uint8_t> out(count);
+			const float inv = 1.0f / (float)sampleCount;
+			for (size_t k = 0; k < count; ++k)
+			{
+				float v = g_scFxAccum[k] * inv;
+				if (b > 0.0f) v = v / (1.001f + b * v); // inverse of the lift
+				out[k] = sc_fxLin2Srgb8(v);
+			}
+			status = sc_fxWriteImage(g_scFxBlock->outPath, out.data(), width, height, g_scFxBlock->quality);
+		}
+	}
+
+	g_scFxBlock->width = width;
+	g_scFxBlock->height = height;
+	g_scFxBlock->status = status;
+	g_scFxBlock->ackId = req;
+}
 
 // externs for reshade
 extern "C" __declspec(dllexport) const char *NAME = "IGCS Connector";
@@ -279,6 +516,9 @@ void handleWorkQueue(effect_runtime* runtime)
 static void onReshadePresent(effect_runtime* runtime)
 {
 	g_screenshotController.presentCalled();
+
+	// Simple Camera frame-capture requests.
+	sc_fxCaptureTick(runtime);
 
 	// handle our work.
 	handleWorkQueue(runtime);
