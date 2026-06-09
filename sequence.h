@@ -98,6 +98,11 @@ struct PoseKeyframe {
   int entityHandle;
   float localOffsetX, localOffsetY, localOffsetZ;
   float lockEntPitch, lockEntYaw, lockEntRoll;
+  // Entity's WORLD position at lock time. Used by the non-rigid (translate-
+  // only) follow in ResolvePose to move the keyframe by the entity's
+  // translation since lock without orbiting it. Captured alongside
+  // lockEntPitch/Yaw/Roll; mirrored on loop-closure the same way.
+  float lockEntPosX, lockEntPosY, lockEntPosZ;
 };
 
 struct EffectEvent {

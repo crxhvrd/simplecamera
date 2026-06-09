@@ -50,6 +50,10 @@ network natives when running under FiveM).
 - **Speed boost** (Shift) and **precision/slow** (Alt) movement modifiers.
 - **Follow / Entity Lock** — make the camera ride along with the player or any
   aimed-at vehicle/ped, optionally tracking its rotation (rigid mode).
+- **Auto Drive** — let the AI drive your current car to the map waypoint or
+  wander the roads, turning it into a self-driving subject you can orbit and
+  film hands-free. Adjustable speed and driving style. Lives under **World &
+  Scene**, so it works in both Free Camera and Camera Sequence modes.
 - Adjustable speed, look sensitivity, zoom speed, roll speed, and FOV.
 
 **Photo / Scene control**
@@ -191,7 +195,7 @@ can switch.
 | **Lens settings** | Field of view (zoom) and roll (lens tilt). |
 | **Depth of field** | Enable, **Auto-Focus**, manual focus distance, near & far focus range. |
 | **Camera effects** | Procedural shake: enable, **preset** (Off / Subtle / Handheld / Vehicle / Earthquake / Custom), base amplitude & frequency, speed→amplitude and speed→frequency coupling, rotation/position weighting, **Stop When Still**, **Randomize Pattern**. |
-| **World & scene** | **Time & Weather** (pause time, time of day, time-lapse, primary/secondary weather + blend), **Pause Game**, **Freeze All Entities**, **Slow Motion**, hide HUD, hide player, disable vehicle shake, info overlay. |
+| **World & scene** | **Time & Weather** (pause time, time of day, time-lapse, primary/secondary weather + blend), **Auto Drive** (see below), **Pause Game**, **Freeze All Entities**, **Slow Motion**, hide HUD, hide player, disable vehicle shake, info overlay. |
 | **Misc settings** | Move player with camera, save position on exit, lock camera position, allow player to move, snap camera to player, level horizon, save settings to INI, reset to defaults. |
 | **Exit** | Tear down the flycam and return to the mode picker. |
 
@@ -213,6 +217,22 @@ can switch.
 | **World & Scene…** | Same scene controls as Free Camera. |
 | **Render to Images…** | Offline image-sequence renderer (see below). |
 | **Exit** | Return to the mode picker. |
+
+### Auto Drive
+
+Found under **World & Scene** in both modes. The AI drives the car you're
+sitting in while the camera flies free — ideal for filming a moving vehicle
+without a second player.
+
+- **Destination: Go To Waypoint** — set a marker on the map; the car drives
+  there and re-routes if you move the marker.
+- **Destination: Drive Anywhere** — the car wanders the road network endlessly.
+- **Speed** (km/h) and **Driving Style** (Normal, Rushed, Avoid Traffic, Ignore
+  Lights, …) tune how it drives.
+
+Get into a car first, open **World & Scene → Auto Drive…**, set a waypoint (for
+waypoint mode), and toggle **Enabled**. Land vehicles only. Leaving the
+camera/sequence mode automatically stops the car.
 
 ---
 

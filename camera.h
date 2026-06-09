@@ -60,6 +60,23 @@ extern bool g_ShakeStopWhenStill;    // fade shake out when camera not translati
 extern bool g_WalkMode;
 extern float g_WalkHeight; // meters above ground
 
+// ---- Auto Drive ----
+// AI drives the player's CURRENT vehicle to the map waypoint (or wanders the
+// roads) while the free camera flies independently — turning the player's car
+// into a self-driving subject you can film hands-free. Land vehicles only.
+
+extern bool g_AutoDriveEnabled;
+extern int g_AutoDriveMode;       // 0 = Go To Waypoint, 1 = Drive Anywhere (wander)
+extern float g_AutoDriveSpeed;    // target speed in m/s (menu shows km/h)
+extern int g_AutoDriveStyleIndex; // index into the driving-style table
+
+extern const char *g_AutoDriveStyleNames[];
+extern const int g_AutoDriveStyleCount;
+int AutoDriveStyleValue(int index); // bitflag for the indexed style
+
+void UpdateAutoDrive(); // per-frame tick (main loop + while a menu is open)
+void AutoDrive_Stop();  // disable + clear the AI driving task
+
 void ApplyShakePreset(int preset);
 void RandomizeShakePattern();
 
@@ -138,6 +155,11 @@ void SetCameraStateFromSequenceLocked(int entity, float localOffsetX,
 // seconds — needed so procedural shake (when enabled via an effect event)
 // can advance its phase. Pass 0 to suppress shake offsets entirely.
 void SequencePushToEngine(float dt);
+
+// Detach the scripted camera from any entity a locked sequence segment
+// attached it to. Call when playback stops so free-fly authoring can move the
+// camera again (an attached cam ignores SET_CAM_COORD — rotation-only).
+void SequenceDetachCamera();
 
 // ---- Functions ----
 

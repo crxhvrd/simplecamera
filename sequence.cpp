@@ -455,6 +455,9 @@ static PoseKeyframe ResolvePose(const CameraSequence *s, int idx,
     p.lockEntPitch = q.lockEntPitch;
     p.lockEntYaw   = q.lockEntYaw;
     p.lockEntRoll  = q.lockEntRoll;
+    p.lockEntPosX  = q.lockEntPosX;
+    p.lockEntPosY  = q.lockEntPosY;
+    p.lockEntPosZ  = q.lockEntPosZ;
   }
   // Entity lock: if this keyframe was authored riding along with an
   // entity that still exists, recompute BOTH its world-space position
@@ -466,36 +469,52 @@ static PoseKeyframe ResolvePose(const CameraSequence *s, int idx,
   // is gone (DOES_ENTITY_EXIST returns FALSE for stale or never-existed
   // handles, so this branch simply skips and the stored coords remain).
   if (p.entityHandle != 0 && ENTITY::DOES_ENTITY_EXIST(p.entityHandle)) {
-    // Position: GET_OFFSET_FROM_ENTITY_IN_WORLD_COORDS — same native
-    // Free Camera calls each frame for rigid-attach (camera.cpp:627-629).
-    Vector3 w = invoke<Vector3>(0x1899F328B0E12848, p.entityHandle,
-                                p.localOffsetX, p.localOffsetY,
-                                p.localOffsetZ);
-    p.posX = w.x;
-    p.posY = w.y;
-    p.posZ = w.z;
+    Vector3 entNowPos = ENTITY::GET_ENTITY_COORDS(p.entityHandle, TRUE);
 
-    // Rotation: mirror the additive-Euler-delta approach the free-cam's
-    // rigid mode uses (camera.cpp:634-659). Take the entity's rotation
-    // change since lock time and apply it directly to the keyframe's
-    // stored world Euler. Mapping matches GET_ENTITY_ROTATION(., 2):
-    //   .x = pitch, .y = roll, .z = yaw.
-    Vector3 entNow = ENTITY::GET_ENTITY_ROTATION(p.entityHandle, 2);
-    float dPitch = entNow.x - p.lockEntPitch;
-    float dRoll  = entNow.y - p.lockEntRoll;
-    float dYaw   = entNow.z - p.lockEntYaw;
-    // Shortest-arc wrap so e.g. a car turning from 179° to -179° gives a
-    // 2° delta (not 358°). Matches the wraparound in camera.cpp's
-    // rigid-mode delta tracker.
-    while (dPitch >  180.0f) dPitch -= 360.0f;
-    while (dPitch <= -180.0f) dPitch += 360.0f;
-    while (dRoll  >  180.0f) dRoll  -= 360.0f;
-    while (dRoll  <= -180.0f) dRoll  += 360.0f;
-    while (dYaw   >  180.0f) dYaw   -= 360.0f;
-    while (dYaw   <= -180.0f) dYaw   += 360.0f;
-    p.pitch += dPitch;
-    p.roll  += dRoll;
-    p.yaw   += dYaw;
+    // ---- Position ----
+    // Rigid Mode decides whether the keyframe ORBITS with the entity or just
+    // rides its translation:
+    //
+    //   Rigid ON  — full rigid attach. GET_OFFSET_FROM_ENTITY_IN_WORLD_COORDS
+    //               rotates the stored local offset by the entity's CURRENT
+    //               rotation, so the keyframe swings around the car as it
+    //               turns (bolted-on like a hood cam).
+    //
+    //   Rigid OFF — translate-only. Keep the world-space offset the keyframe
+    //               had at lock time and move it only by how far the entity
+    //               has TRANSLATED since: world_now = stored_world +
+    //               (entPos_now - entPos_at_lock). The keyframe follows the
+    //               car down the road but does NOT swing around it.
+    if (g_FollowRigidMode) {
+      Vector3 w = invoke<Vector3>(0x1899F328B0E12848, p.entityHandle,
+                                  p.localOffsetX, p.localOffsetY,
+                                  p.localOffsetZ);
+      p.posX = w.x;
+      p.posY = w.y;
+      p.posZ = w.z;
+    } else {
+      p.posX += entNowPos.x - p.lockEntPosX;
+      p.posY += entNowPos.y - p.lockEntPosY;
+      p.posZ += entNowPos.z - p.lockEntPosZ;
+    }
+
+    // ---- Rotation: aim AT the entity (look-at) ----
+    // The camera always points at the entity, no matter which way the car is
+    // facing. We do NOT add the car's heading change — that made the shot
+    // swing away as the car turned. Instead we recompute pitch/yaw from the
+    // keyframe's (resolved) world position toward the entity's current
+    // position. Yaw/pitch convention matches the free camera's forward vector
+    // (camera.cpp): forward = (-sin(yaw)cos(pitch), cos(yaw)cos(pitch),
+    // sin(pitch)). Roll is left as authored (look-at doesn't define roll).
+    float dx = entNowPos.x - p.posX;
+    float dy = entNowPos.y - p.posY;
+    float dz = entNowPos.z - p.posZ;
+    float horiz = sqrtf(dx * dx + dy * dy);
+    if (horiz > 0.0001f || fabsf(dz) > 0.0001f) {
+      const float RAD2DEG = 57.2957795f;
+      p.yaw = atan2f(-dx, dy) * RAD2DEG;
+      p.pitch = atan2f(dz, horiz) * RAD2DEG;
+    }
   }
   return p;
 }
@@ -611,6 +630,9 @@ int Sequence_CloseLoop() {
     last.lockEntPitch = first.lockEntPitch;
     last.lockEntYaw   = first.lockEntYaw;
     last.lockEntRoll  = first.lockEntRoll;
+    last.lockEntPosX  = first.lockEntPosX;
+    last.lockEntPosY  = first.lockEntPosY;
+    last.lockEntPosZ  = first.lockEntPosZ;
     return (int)s->poses.size() - 1;
   }
 
@@ -789,6 +811,7 @@ int Sequence_ApplyLockToAll(int entityHandle) {
   // lockEntRot. Conceptually: "at this instant, freeze the world<-entity
   // transform and use it as the basis for all keyframes' lock state".
   Vector3 entRot = ENTITY::GET_ENTITY_ROTATION(entityHandle, 2);
+  Vector3 entPos = ENTITY::GET_ENTITY_COORDS(entityHandle, TRUE);
   int n = 0;
   for (PoseKeyframe &p : s->poses) {
     // Compute local offset from the keyframe's CURRENT stored world
@@ -803,6 +826,9 @@ int Sequence_ApplyLockToAll(int entityHandle) {
     p.lockEntPitch = entRot.x;
     p.lockEntRoll  = entRot.y;
     p.lockEntYaw   = entRot.z;
+    p.lockEntPosX  = entPos.x;
+    p.lockEntPosY  = entPos.y;
+    p.lockEntPosZ  = entPos.z;
     ++n;
   }
   return n;
@@ -823,6 +849,7 @@ int Sequence_ClearAllLocks() {
     p.entityHandle = 0;
     p.localOffsetX = p.localOffsetY = p.localOffsetZ = 0.0f;
     p.lockEntPitch = p.lockEntYaw = p.lockEntRoll = 0.0f;
+    p.lockEntPosX = p.lockEntPosY = p.lockEntPosZ = 0.0f;
     if (wasLocked) ++n;
   }
   return n;
@@ -845,6 +872,7 @@ void Sequence_CaptureLockForPose(PoseKeyframe &p) {
   p.entityHandle = 0;
   p.localOffsetX = p.localOffsetY = p.localOffsetZ = 0.0f;
   p.lockEntPitch = p.lockEntYaw = p.lockEntRoll = 0.0f;
+  p.lockEntPosX = p.lockEntPosY = p.lockEntPosZ = 0.0f;
   // Resolve the current free-cam follow target. Mode 1 (Player follow)
   // and mode 2 (Aimed Entity) both produce a usable keyframe anchor —
   // mode 1 attaches the keyframe to whichever ped the user is
@@ -873,6 +901,12 @@ void Sequence_CaptureLockForPose(PoseKeyframe &p) {
   p.lockEntPitch = entRot.x;
   p.lockEntRoll  = entRot.y;
   p.lockEntYaw   = entRot.z;
+  // Snapshot the entity's world position too, so the non-rigid translate-only
+  // follow can offset by the entity's travel since this moment.
+  Vector3 entPos = ENTITY::GET_ENTITY_COORDS(target, TRUE);
+  p.lockEntPosX = entPos.x;
+  p.lockEntPosY = entPos.y;
+  p.lockEntPosZ = entPos.z;
 }
 
 int Sequence_CapturePoseAtCurrentTime() {
@@ -1542,7 +1576,22 @@ void Sequence_FrameTick() {
   if (!s_InMode) return;
   float dt = GAMEPLAY::GET_FRAME_TIME();
   if (dt <= 0.0f || dt > 0.1f) dt = 0.016f;
+
+  static bool s_PrevTickPlaying = false;
   Sequence_Tick(dt);
+
+  // A locked-segment playback frame leaves the scripted cam ATTACHED to the
+  // entity (ATTACH_CAM_TO_ENTITY). When playback stops / pauses / ends, detach
+  // it so free-fly authoring can translate the camera again — otherwise
+  // SET_CAM_COORD is ignored while attached and the user can only rotate.
+  // Edge-detected here so it fires exactly once on the playing->stopped
+  // transition no matter where the stop came from (hotkey, menu, natural end),
+  // and AFTER Sequence_Tick's final push (which would otherwise re-attach).
+  if (s_PrevTickPlaying && !s_Playing) {
+    SequenceDetachCamera();
+  }
+  s_PrevTickPlaying = s_Playing;
+
   // Free-fly authoring: when playback is OFF, let the user fly the camera
   // around with WASD/etc. to compose the next keyframe. UpdateFreeCamera
   // owns input + collision + IGCS + shake handling.
@@ -1660,6 +1709,10 @@ static void ParsePose(const char *line, PoseKeyframe &p) {
     else if (!strcmp(k, "lEntP"))  p.lockEntPitch = (float)atof(v);
     else if (!strcmp(k, "lEntY"))  p.lockEntYaw   = (float)atof(v);
     else if (!strcmp(k, "lEntR"))  p.lockEntRoll  = (float)atof(v);
+    // Entity world position at lock time (for non-rigid translate-only follow).
+    else if (!strcmp(k, "lEpX"))   p.lockEntPosX  = (float)atof(v);
+    else if (!strcmp(k, "lEpY"))   p.lockEntPosY  = (float)atof(v);
+    else if (!strcmp(k, "lEpZ"))   p.lockEntPosZ  = (float)atof(v);
   }
   // Keep entityHandle at 0 on load regardless of the locked flag — see
   // comment above. If hadLockFlag is true we still cleared the handle;
@@ -1698,9 +1751,11 @@ static void FormatPose(const PoseKeyframe &p, char *out, size_t bufSize) {
   if (n > 0 && p.entityHandle != 0) {
     sprintf_s(out + n, bufSize - n,
               ",locked=1,locX=%.3f,locY=%.3f,locZ=%.3f"
-              ",lEntP=%.3f,lEntY=%.3f,lEntR=%.3f",
+              ",lEntP=%.3f,lEntY=%.3f,lEntR=%.3f"
+              ",lEpX=%.3f,lEpY=%.3f,lEpZ=%.3f",
               p.localOffsetX, p.localOffsetY, p.localOffsetZ,
-              p.lockEntPitch, p.lockEntYaw, p.lockEntRoll);
+              p.lockEntPitch, p.lockEntYaw, p.lockEntRoll,
+              p.lockEntPosX, p.lockEntPosY, p.lockEntPosZ);
   }
 }
 

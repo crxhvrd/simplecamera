@@ -107,6 +107,14 @@ void LoadSettings() {
   g_WalkHeight = IniReadFloat("Camera", "WalkHeight", g_WalkHeight, path);
   g_FollowRigidMode = IniReadBool("Camera", "FollowRigidMode", g_FollowRigidMode, path);
 
+  // ---- Auto Drive ---- (mode/speed/style persist; the enabled flag is
+  // transient — it's never auto-engaged on load)
+  g_AutoDriveMode = GetPrivateProfileIntA("AutoDrive", "Mode", g_AutoDriveMode, path);
+  g_AutoDriveSpeed = IniReadFloat("AutoDrive", "Speed", g_AutoDriveSpeed, path);
+  g_AutoDriveStyleIndex = GetPrivateProfileIntA("AutoDrive", "StyleIndex", g_AutoDriveStyleIndex, path);
+  if (g_AutoDriveStyleIndex < 0 || g_AutoDriveStyleIndex >= g_AutoDriveStyleCount)
+    g_AutoDriveStyleIndex = 0;
+
   // ---- Drone ----
   g_DroneMode = IniReadBool("Drone", "Enabled", g_DroneMode, path);
   g_DroneDrag = IniReadFloat("Drone", "Drag", g_DroneDrag, path);
@@ -175,6 +183,10 @@ void SaveSettings() {
   wf("Camera", "WalkHeight", g_WalkHeight);
   wb("Camera", "FollowRigidMode", g_FollowRigidMode);
 
+  wi("AutoDrive", "Mode", g_AutoDriveMode);
+  wf("AutoDrive", "Speed", g_AutoDriveSpeed);
+  wi("AutoDrive", "StyleIndex", g_AutoDriveStyleIndex);
+
   wb("Drone", "Enabled", g_DroneMode);
   wf("Drone", "Drag", g_DroneDrag);
   wf("Drone", "Acceleration", g_DroneAcceleration);
@@ -225,6 +237,10 @@ static void ResetSettingsToDefaults() {
   g_WalkMode = false;
   g_WalkHeight = 1.7f;
   g_FollowRigidMode = false;
+
+  g_AutoDriveMode = 0;
+  g_AutoDriveSpeed = 20.0f;
+  g_AutoDriveStyleIndex = 0;
 
   g_DroneMode = false;
   g_DroneDrag = 3.0f;
@@ -535,6 +551,7 @@ static void MenuFrameTick() {
   } else if (g_FreeCamActive) {
     UpdateFreeCamera();
   }
+  UpdateAutoDrive();
   UpdateTimeWeather();
   UpdateStatusText();
   UpdateGlobalEffects();
@@ -1828,9 +1845,14 @@ static void ProcessMiscMenu() {
 // Time & Weather is kept as its own sub-submenu (it's a dense screen with its
 // own hold-to-scrub time logic) rather than inlined here.
 
+// Defined further down (just before the Free Camera main menu). Forward-
+// declared so World & Scene — shared by Free Camera and Camera Sequence —
+// can open it from both modes.
+static void ProcessAutoDriveMenu();
+
 static void ProcessWorldSceneMenu() {
   const float lineWidth = 320.0f;
-  const int lineCount = 7;
+  const int lineCount = 8;
   int activeIdx = 0;
   // "Reset to Defaults" arms on first Enter and commits on a second within a
   // few seconds, so a stray click can't wipe a dialed-in setup.
@@ -1845,20 +1867,25 @@ static void ProcessWorldSceneMenu() {
                    true);
       DrawMenuValue("Time & Weather...", "", lineWidth, 9.0, 60.0 + 0 * 36.0,
                     0.0, 9.0, activeIdx == 0);
+      DrawMenuValue("Auto Drive...",
+                    g_AutoDriveEnabled
+                        ? (g_AutoDriveMode == 0 ? "On - waypoint" : "On - wander")
+                        : "Off",
+                    lineWidth, 9.0, 60.0 + 1 * 36.0, 0.0, 9.0, activeIdx == 1);
       DrawMenuValue("Hide Game HUD", FormatBool(g_HideHUD), lineWidth, 9.0,
-                    60.0 + 1 * 36.0, 0.0, 9.0, activeIdx == 1);
+                    60.0 + 2 * 36.0, 0.0, 9.0, activeIdx == 2);
       DrawMenuValue("Hide Player Character", FormatBool(g_HidePlayer), lineWidth,
-                    9.0, 60.0 + 2 * 36.0, 0.0, 9.0, activeIdx == 2);
+                    9.0, 60.0 + 3 * 36.0, 0.0, 9.0, activeIdx == 3);
       DrawMenuValue("Disable Vehicle Shake", FormatBool(g_DisableVehicleShake),
-                    lineWidth, 9.0, 60.0 + 3 * 36.0, 0.0, 9.0, activeIdx == 3);
+                    lineWidth, 9.0, 60.0 + 4 * 36.0, 0.0, 9.0, activeIdx == 4);
       DrawMenuValue("Show Info Overlay", FormatBool(g_ShowInfoOverlay), lineWidth,
-                    9.0, 60.0 + 4 * 36.0, 0.0, 9.0, activeIdx == 4);
+                    9.0, 60.0 + 5 * 36.0, 0.0, 9.0, activeIdx == 5);
       DrawMenuValue("Save Settings to INI", "Press Enter", lineWidth, 9.0,
-                    60.0 + 5 * 36.0, 0.0, 9.0, activeIdx == 5);
+                    60.0 + 6 * 36.0, 0.0, 9.0, activeIdx == 6);
       DrawMenuValue("Reset to Defaults",
                     (GetTickCount() < resetArmedUntil) ? "Press again to confirm"
                                                        : "Press Enter",
-                    lineWidth, 9.0, 60.0 + 6 * 36.0, 0.0, 9.0, activeIdx == 6);
+                    lineWidth, 9.0, 60.0 + 7 * 36.0, 0.0, 9.0, activeIdx == 7);
 
       DrawMenuFooter();
       MenuFrameTick();
@@ -1891,28 +1918,31 @@ static void ProcessWorldSceneMenu() {
         ProcessTimeWeatherMenu();
         break;
       case 1:
+        ProcessAutoDriveMenu();
+        break;
+      case 2:
         g_HideHUD = !g_HideHUD;
         SetStatusText(g_HideHUD ? "HUD Hidden" : "HUD Visible");
         break;
-      case 2:
+      case 3:
         g_HidePlayer = !g_HidePlayer;
         SetStatusText(g_HidePlayer ? "Player Hidden" : "Player Visible");
         break;
-      case 3:
+      case 4:
         g_DisableVehicleShake = !g_DisableVehicleShake;
         SetStatusText(g_DisableVehicleShake ? "Vehicle shake disabled"
                                             : "Vehicle shake enabled");
         break;
-      case 4:
+      case 5:
         g_ShowInfoOverlay = !g_ShowInfoOverlay;
         SetStatusText(g_ShowInfoOverlay ? "Info overlay shown"
                                         : "Info overlay hidden");
         break;
-      case 5:
+      case 6:
         SaveSettings();
         SetStatusText("Settings saved to SimpleCamera.ini");
         break;
-      case 6:
+      case 7:
         if (GetTickCount() < resetArmedUntil) {
           ResetSettingsToDefaults();
           resetArmedUntil = 0;
@@ -2143,6 +2173,133 @@ static void ProcessCameraEffectsMenu() {
         g_ShakePosWeight -= 0.1f * mult;
         ClampShake();
         MarkShakeCustom();
+      }
+      waitTime = adjWait;
+    }
+  }
+}
+
+// ============================================================
+//  Auto Drive submenu
+//  AI drives the player's current land vehicle (to the map waypoint
+//  or wandering) while the free camera flies independently.
+// ============================================================
+
+static void ProcessAutoDriveMenu() {
+  const float lineWidth = 320.0f;
+  const int lineCount = 4;
+  int activeIdx = 0;
+
+  DWORD holdStart = 0;
+  bool wasHolding = false;
+
+  DWORD waitTime = 150;
+  while (true) {
+    DWORD maxTick = GetTickCount() + waitTime;
+    do {
+      DisableMenuPhoneControls();
+      DrawMenuLine("AUTO DRIVE", "", lineWidth, 15.0, 18.0, 0.0, 5.0, false,
+                   true);
+
+      DrawMenuValue("Enabled", FormatBool(g_AutoDriveEnabled), lineWidth, 9.0,
+                    60.0 + 0 * 36.0, 0.0, 9.0, activeIdx == 0);
+      DrawMenuValue("Destination",
+                    g_AutoDriveMode == 0 ? "Go To Waypoint" : "Drive Anywhere",
+                    lineWidth, 9.0, 60.0 + 1 * 36.0, 0.0, 9.0, activeIdx == 1);
+      // Speed stored in m/s; show km/h (1 m/s = 3.6 km/h).
+      DrawMenuValue("Speed", FormatInt((int)(g_AutoDriveSpeed * 3.6f + 0.5f)) +
+                                 " km/h",
+                    lineWidth, 9.0, 60.0 + 2 * 36.0, 0.0, 9.0, activeIdx == 2);
+      DrawMenuValue("Driving Style", g_AutoDriveStyleNames[g_AutoDriveStyleIndex],
+                    lineWidth, 9.0, 60.0 + 3 * 36.0, 0.0, 9.0, activeIdx == 3);
+
+      // Hint when waypoint mode is on but the player hasn't set a pin.
+      if (g_AutoDriveEnabled && g_AutoDriveMode == 0 &&
+          UI::IS_WAYPOINT_ACTIVE() == 0) {
+        UI::SET_TEXT_FONT(0);
+        UI::SET_TEXT_SCALE(0.0f, 0.30f);
+        UI::SET_TEXT_COLOUR(255, 200, 80, 255);
+        UI::SET_TEXT_CENTRE(1);
+        UI::SET_TEXT_DROPSHADOW(0, 0, 0, 0, 0);
+        UI::SET_TEXT_EDGE(1, 0, 0, 0, 205);
+        UI::_SET_TEXT_ENTRY((char *)"STRING");
+        UI::_ADD_TEXT_COMPONENT_STRING(
+            (LPSTR) "Set a waypoint on the map to start driving");
+        UI::_DRAW_TEXT(0.5f, 0.62f);
+      }
+
+      DrawMenuFooter();
+      MenuFrameTick();
+      WAIT(0);
+    } while (GetTickCount() < maxTick);
+    waitTime = 0;
+
+    bool bSelect, bBack, bUp, bDown, bLeft, bRight;
+    GetMenuButtons(&bSelect, &bBack, &bUp, &bDown, &bLeft, &bRight);
+
+    if (bBack) {
+      MenuBeep();
+      break;
+    }
+    if (bUp) {
+      MenuBeep();
+      activeIdx = (activeIdx == 0) ? lineCount - 1 : activeIdx - 1;
+      waitTime = 150;
+    }
+    if (bDown) {
+      MenuBeep();
+      activeIdx = (activeIdx + 1) % lineCount;
+      waitTime = 150;
+    }
+
+    if (bSelect) {
+      MenuBeep();
+      if (activeIdx == 0) {
+        if (g_AutoDriveEnabled) {
+          AutoDrive_Stop(); // clears the task + restores freeze state
+          SetStatusText("Auto Drive off");
+        } else {
+          // Only meaningful with a vehicle, but enable regardless — the tick
+          // idles until the player is in one.
+          g_AutoDriveEnabled = true;
+          SetStatusText(g_AutoDriveMode == 0
+                            ? "Auto Drive on — set a waypoint"
+                            : "Auto Drive on — wandering");
+        }
+      } else if (activeIdx == 1) {
+        g_AutoDriveMode = (g_AutoDriveMode == 0) ? 1 : 0;
+        SetStatusText(g_AutoDriveMode == 0 ? "Driving to waypoint"
+                                           : "Driving anywhere");
+      }
+      waitTime = 200;
+    }
+
+    DWORD adjWait = 100;
+    float mult = HoldAccel(bRight || bLeft, holdStart, wasHolding, &adjWait);
+
+    if (bLeft || bRight) {
+      MenuBeep();
+      int dir = bRight ? 1 : -1;
+      switch (activeIdx) {
+      case 1:
+        g_AutoDriveMode = (g_AutoDriveMode == 0) ? 1 : 0;
+        break;
+      case 2: {
+        // Adjust in ~5 km/h steps (converted to m/s), 5..360 km/h.
+        g_AutoDriveSpeed += dir * (5.0f / 3.6f) * mult;
+        if (g_AutoDriveSpeed < 5.0f / 3.6f)
+          g_AutoDriveSpeed = 5.0f / 3.6f;
+        if (g_AutoDriveSpeed > 100.0f)
+          g_AutoDriveSpeed = 100.0f;
+        break;
+      }
+      case 3:
+        g_AutoDriveStyleIndex += dir;
+        if (g_AutoDriveStyleIndex < 0)
+          g_AutoDriveStyleIndex = g_AutoDriveStyleCount - 1;
+        if (g_AutoDriveStyleIndex >= g_AutoDriveStyleCount)
+          g_AutoDriveStyleIndex = 0;
+        break;
       }
       waitTime = adjWait;
     }

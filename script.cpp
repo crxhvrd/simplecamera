@@ -77,6 +77,11 @@ void main() {
       UpdateFreeCamera();
     }
 
+    // Drive the player's vehicle via AI when Auto Drive is engaged (no-op
+    // otherwise). Runs alongside the free camera so you can film a self-driving
+    // car hands-free.
+    UpdateAutoDrive();
+
     // Update time/weather overrides
     UpdateTimeWeather();
 

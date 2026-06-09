@@ -83,6 +83,12 @@ bool g_ShakeStopWhenStill = false;
 bool g_WalkMode = false;
 float g_WalkHeight = 1.7f; // ~5'7" eye level
 
+// Auto Drive
+bool g_AutoDriveEnabled = false;
+int g_AutoDriveMode = 0;        // 0 = Go To Waypoint, 1 = Drive Anywhere
+float g_AutoDriveSpeed = 20.0f; // m/s (~72 km/h)
+int g_AutoDriveStyleIndex = 0;
+
 // Depth of Field
 bool g_DoFEnabled = false;
 bool g_DoFAutofocus = false;
@@ -572,6 +578,11 @@ static void FreezeWorldEntities(bool freeze) {
 void DestroyFreeCamera() {
   if (!g_FreeCamActive)
     return;
+
+  // Stop any AI driving task before we restore/refreeze the player ped, so the
+  // car isn't left mid-route with a frozen driver. Idempotent — safe to call
+  // even when Auto Drive was never engaged.
+  AutoDrive_Stop();
 
   // Restore player
   if (ENTITY::DOES_ENTITY_EXIST(s_FrozenPed)) {
@@ -1571,6 +1582,142 @@ void UpdateFreeCamera() {
 }
 
 // ============================================================
+//  Auto Drive
+// ============================================================
+//
+// The AI drives the player's current land vehicle while the free camera flies
+// independently. Two modes: "Go To Waypoint" tasks the car to the map pin and
+// re-tasks if the pin moves; "Drive Anywhere" wanders the road network. Written
+// from scratch against the documented GTA natives (no third-party code).
+
+// Standard GTA V driving-style bitflags.
+struct AutoDriveStyleDef {
+  const char *name;
+  int value;
+};
+static const AutoDriveStyleDef kAutoDriveStyles[] = {
+    {"Normal", 786603},
+    {"Rushed", 1074528293},
+    {"Avoid Traffic", 786468},
+    {"Ignore Lights", 2883621},
+    {"Sometimes Overtake", 5},
+    {"Avoid Traffic A Lot", 6},
+};
+const char *g_AutoDriveStyleNames[] = {
+    "Normal",      "Rushed",            "Avoid Traffic",
+    "Ignore Lights", "Sometimes Overtake", "Avoid Traffic A Lot"};
+const int g_AutoDriveStyleCount =
+    sizeof(g_AutoDriveStyleNames) / sizeof(g_AutoDriveStyleNames[0]);
+
+int AutoDriveStyleValue(int index) {
+  if (index < 0 || index >= g_AutoDriveStyleCount)
+    index = 0;
+  return kAutoDriveStyles[index].value;
+}
+
+// Live-task tracking. We only (re)issue the driving task when something
+// material changes — re-tasking every frame makes the car stutter and brake.
+static bool s_AutoDriveTasked = false;
+static int s_AutoDriveVeh = 0;
+static float s_AutoDriveDestX = 0.0f, s_AutoDriveDestY = 0.0f,
+             s_AutoDriveDestZ = 0.0f;
+static float s_AutoDriveLastSpeed = -1.0f;
+static int s_AutoDriveLastStyle = -1;
+static int s_AutoDriveLastMode = -1;
+
+void AutoDrive_Stop() {
+  Ped ped = PLAYER::PLAYER_PED_ID();
+  if (s_AutoDriveTasked && ENTITY::DOES_ENTITY_EXIST(ped))
+    AI::CLEAR_PED_TASKS(ped);
+
+  // Restore the free-cam freeze state we lifted so the AI could drive — match
+  // the "Allow Player to Move" toggle so we don't leave the ped in a state the
+  // rest of the mod doesn't expect.
+  if (g_FreeCamActive && !g_EnablePlayerMovement &&
+      ENTITY::DOES_ENTITY_EXIST(ped)) {
+    ENTITY::FREEZE_ENTITY_POSITION(ped, TRUE);
+    ENTITY::SET_ENTITY_COLLISION(ped, FALSE, FALSE);
+  }
+
+  g_AutoDriveEnabled = false;
+  s_AutoDriveTasked = false;
+  s_AutoDriveVeh = 0;
+  s_AutoDriveLastSpeed = -1.0f;
+  s_AutoDriveLastStyle = -1;
+  s_AutoDriveLastMode = -1;
+}
+
+void UpdateAutoDrive() {
+  if (!g_AutoDriveEnabled)
+    return;
+
+  Ped ped = PLAYER::PLAYER_PED_ID();
+  if (!ENTITY::DOES_ENTITY_EXIST(ped) ||
+      !PED::IS_PED_IN_ANY_VEHICLE(ped, FALSE)) {
+    // Nothing to drive (player on foot) — drop any stale task and idle.
+    if (s_AutoDriveTasked && ENTITY::DOES_ENTITY_EXIST(ped))
+      AI::CLEAR_PED_TASKS(ped);
+    s_AutoDriveTasked = false;
+    s_AutoDriveVeh = 0;
+    return;
+  }
+
+  Vehicle veh = PED::GET_VEHICLE_PED_IS_IN(ped, FALSE);
+  if (veh == 0 || !ENTITY::DOES_ENTITY_EXIST(veh))
+    return;
+
+  // The free camera freezes the player ped on entry; a frozen driver can't
+  // drive. Keep it free + collidable while Auto Drive owns the car.
+  ENTITY::FREEZE_ENTITY_POSITION(ped, FALSE);
+  ENTITY::SET_ENTITY_COLLISION(ped, TRUE, FALSE);
+
+  int style = AutoDriveStyleValue(g_AutoDriveStyleIndex);
+  float speed = g_AutoDriveSpeed;
+
+  bool needRetask = !s_AutoDriveTasked || veh != s_AutoDriveVeh ||
+                    speed != s_AutoDriveLastSpeed ||
+                    style != s_AutoDriveLastStyle ||
+                    g_AutoDriveMode != s_AutoDriveLastMode;
+
+  if (g_AutoDriveMode == 0) {
+    // Go To Waypoint
+    if (!UI::IS_WAYPOINT_ACTIVE()) {
+      // No pin set — stop driving and wait for one. Re-tasks automatically
+      // once the user drops a waypoint.
+      if (s_AutoDriveTasked) {
+        AI::CLEAR_PED_TASKS(ped);
+        s_AutoDriveTasked = false;
+      }
+      return;
+    }
+    Vector3 dest = UI::GET_BLIP_COORDS(UI::GET_FIRST_BLIP_INFO_ID(8)); // 8 = waypoint
+    // Re-task if the pin moved more than ~5 m (squared distance > 25).
+    float dx = dest.x - s_AutoDriveDestX;
+    float dy = dest.y - s_AutoDriveDestY;
+    float dz = dest.z - s_AutoDriveDestZ;
+    if (dx * dx + dy * dy + dz * dz > 25.0f)
+      needRetask = true;
+    if (needRetask) {
+      AI::TASK_VEHICLE_DRIVE_TO_COORD_LONGRANGE(ped, veh, dest.x, dest.y,
+                                                dest.z, speed, style, 7.0f);
+      s_AutoDriveDestX = dest.x;
+      s_AutoDriveDestY = dest.y;
+      s_AutoDriveDestZ = dest.z;
+    }
+  } else {
+    // Drive Anywhere (wander the road network)
+    if (needRetask)
+      AI::TASK_VEHICLE_DRIVE_WANDER(ped, veh, speed, style);
+  }
+
+  s_AutoDriveTasked = true;
+  s_AutoDriveVeh = veh;
+  s_AutoDriveLastSpeed = speed;
+  s_AutoDriveLastStyle = style;
+  s_AutoDriveLastMode = g_AutoDriveMode;
+}
+
+// ============================================================
 //  Time & Weather Update
 // ============================================================
 
@@ -1911,4 +2058,16 @@ void SequencePushToEngine(float dt) {
   CAM::SET_CAM_ROT(s_Cam, s_Pitch + shakePitchD,
                    g_CamRoll + shakeRollD, s_Yaw + shakeYawD, 2);
   invoke<Void>(0xB13C14F66A00D047, s_Cam, g_CamFOV); // SET_CAM_FOV (real-time)
+}
+
+// Detach the scripted cam from any entity a locked sequence segment bound it
+// to via ATTACH_CAM_TO_ENTITY. Must run when playback stops — otherwise the
+// cam stays glued to the entity and free-fly authoring can't TRANSLATE it
+// (SET_CAM_COORD is ignored while attached); you'd only be able to rotate.
+// Idempotent: DETACH_CAM is harmless when the cam isn't actually attached.
+void SequenceDetachCamera() {
+  if (s_Cam != 0)
+    invoke<Void>(0xA2FABBE87F4BAD82, s_Cam, FALSE); // DETACH_CAM
+  s_SequenceAttachActive = false;
+  s_SequenceAttachEntity = 0;
 }
