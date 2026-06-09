@@ -267,15 +267,20 @@ files — ideal for assembling a clean, stutter-free clip in a video editor.
 
 1. **Requires ReShade (with add-on support) + the IgcsConnector add-on** (see
    next section). The menu shows a warning if the add-on isn't detected.
-2. In the Sequence menu open **Render to Images…** and set:
+2. **Enable the `IgcsDOF` technique** (the `IgcsDof.fx` shader) in the ReShade
+   in-game menu — the renderer's frame capture goes through it, so rendering
+   produces no/black frames if it's left off. (Copy `IgcsDof.fx` into your
+   ReShade shaders folder if it isn't already there, then tick **IgcsDOF** in
+   the ReShade menu.)
+3. In the Sequence menu open **Render to Images…** and set:
    - **Output FPS**, **Settle/Flush Frames** (let the frame stabilise before
      capture).
    - **Motion Blur** samples, **Shutter**, **Blur Strength**, **Highlight
      Boost** for cinematic blur.
    - **Format** (PNG lossless or JPEG + quality) and optional **World Slow-mo**.
-3. Choose **Start Render**. Frames are written to
+4. Choose **Start Render**. Frames are written to
    `SimpleCamera_Captures/render_NNNN/` next to the `.asi`.
-4. Import the image sequence into your editor at the same FPS.
+5. Import the image sequence into your editor at the same FPS.
 
 > Press **F10** at any time in Free Camera for a quick single-frame capture test
 > (also via the ReShade add-on).
@@ -291,8 +296,10 @@ sessions). When such a session is active, Simple Camera hands control of the
 camera to the add-on so the two never fight.
 
 The same shared channel is what powers **F10 single-frame capture** and the
-**image-sequence renderer**. None of the core free-camera features need ReShade —
-it's only required for the capture/render and IGCS tooling.
+**image-sequence renderer**. For those to work you must also **enable the
+`IgcsDOF` technique (`IgcsDof.fx`) in the ReShade in-game menu** — frame capture
+is routed through that shader. None of the core free-camera features need
+ReShade — it's only required for the capture/render and IGCS tooling.
 
 ---
 
@@ -351,6 +358,9 @@ Source layout:
 - **"Needs ReShade + IGCS addon" on Start Render** — The renderer and F10
   capture need ReShade (add-on support) plus the IgcsConnector add-on loaded.
   Core free-cam features work without them.
+- **Render runs but the frames are black / empty** — The `IgcsDOF` technique
+  (the `IgcsDof.fx` shader) must be **enabled in the ReShade in-game menu** —
+  capture goes through it. Tick it on and render again.
 - **Camera clips through walls** — Enable **World Collision** in the Movement
   menu (it's off by default so flight stays unobstructed).
 - **Time/weather changes don't stick in FiveM** — The mod auto-detects FiveM and
