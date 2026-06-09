@@ -380,6 +380,39 @@ files — ideal for assembling a clean, stutter-free clip in a video editor.
 > Press **F10** at any time in Free Camera for a quick single-frame capture test
 > (also via the ReShade add-on).
 
+### Render Mode — Camera-led vs Synced
+
+The first row, **Render Mode**, is the most important choice. It decides whether
+the *world* animates while frames are captured:
+
+**Camera-led (static)** — the world is held nearly frozen (a very low time
+scale) and the camera is **scrubbed deterministically** to each output frame's
+exact time on the timeline. Every frame is pixel-exact and repeatable, with no
+timing drift.
+- Best for: clean fly-throughs of static or near-static scenes — architecture,
+  landscapes, interiors — and any time you want a flawless, jitter-free camera
+  move.
+- Trade-off: dynamic elements (traffic, peds, physics, cloth, water, explosions)
+  barely move, so the world looks frozen.
+- Motion blur is built by scrubbing extra **sub-samples** inside the shutter
+  window and averaging them, so **Shutter** and **Blur Strength** apply here.
+  **Settle Frames** also apply (let the image stabilise before the grab).
+
+**Synced (live world)** — the sequence actually **plays** at a slow time scale,
+so the camera, the world, shake and effect events all advance on the **same game
+clock** and stay in lockstep. A frame is grabbed each time playback crosses the
+next 1/fps mark, so world motion matches camera speed exactly.
+- Best for: shots where the world must be **alive** and in sync — moving traffic,
+  pedestrians, your Auto-Drive car, physics, water, particle effects.
+- Motion blur accumulates several **consecutive live frames** per output frame,
+  so it blurs the **whole moving scene**, not just the camera move. (**Shutter**,
+  **Blur Strength** and **Settle Frames** don't apply in this mode.)
+- **World Slow-mo** set to **Auto** lets the renderer tune the time scale each
+  frame to keep capture in sync; or pin a fixed value.
+
+Rule of thumb: **static/empty scene or you only care about the camera move →
+Camera-led. A living, moving world → Synced.**
+
 ---
 
 ## ReShade / IGCS Connector
