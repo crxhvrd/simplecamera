@@ -25,7 +25,12 @@ network natives when running under FiveM).
 - [The Menu](#the-menu)
   - [Free Camera](#free-camera-menu)
   - [Camera Sequence](#camera-sequence-menu)
-- [Cinematic Sequences — Tutorial](#cinematic-sequences--tutorial)
+- [Workflows](#workflows)
+  - [A. Photo Mode — capturing a still](#a-photo-mode--capturing-a-still)
+  - [B. Following / filming a moving subject](#b-following--filming-a-moving-subject)
+  - [C. Cinematic camera move (sequence)](#c-cinematic-camera-move-sequence)
+  - [D. From sequence to finished video](#d-from-sequence-to-finished-video)
+  - [Tips & techniques](#tips--techniques)
 - [Rendering an Image Sequence](#rendering-an-image-sequence)
 - [ReShade / IGCS Connector](#reshade--igcs-connector)
 - [Configuration File](#configuration-file)
@@ -236,27 +241,117 @@ camera/sequence mode automatically stops the car.
 
 ---
 
-## Cinematic Sequences — Tutorial
+## Workflows
 
-1. Press **F5** → pick **Camera Sequence**. An empty sequence is created and you
-   can free-fly the camera while the menu is open.
-2. Fly to your first shot. Press **F6** (or **Capture Current Pose**) to drop a
-   keyframe.
-3. Fly to the next position/angle/zoom and press **F6** again. Repeat for as many
-   keyframes as you want.
-4. Open **Pose Keyframes…** to fine-tune any keyframe's time, and set its
-   **easing** (try **Ease-In-Out** for smooth starts/stops) and **path type**
-   (**Spline** for flowing curves through your points).
-5. *(Optional)* Open **Effect Events…** to add a shake or slow-motion change at a
-   specific time on the timeline.
-6. *(Optional)* To ride along with a moving car: in Free Camera, lock onto the
-   vehicle (Follow Target → Aimed Entity), then use **Follow & Entity Lock…** to
-   anchor your keyframes to it.
-7. Press **F7** to play, **F8** to stop. Adjust **Speed** and **Loop** to taste.
-   Use **Close Loop** if you want a perfectly seamless repeating move.
-8. Turn off **Show Markers** before recording so the helper spheres don't appear
-   in your footage. Press **F8** when you're done.
-9. **Save All to INI** keeps your sequences between sessions.
+Everything in Simple Camera serves one of two end goals: **a still photo** or
+**a moving shot**. The recipes below walk each one start to finish, and show how
+the features combine.
+
+The golden rule: **F5 opens the menu, and the camera keeps living while the menu
+is open** — so you compose with the menu up, then close it (F5 / Backspace) for a
+clean frame. Closing the menu does *not* exit the flycam; use **Exit** for that.
+
+### A. Photo Mode — capturing a still
+
+1. **Enter.** Press **F5**, choose **Free Camera**. The flycam engages and the
+   HUD + your character auto-hide.
+2. **Get to the spot.** Fly with **WASD** + **Space/Ctrl**, look with the mouse.
+   Hold **Shift** to cover ground fast, **Alt** for slow, precise framing. Mouse
+   wheel changes the base fly speed. If you keep clipping into geometry, turn on
+   **Movement → World Collision**.
+3. **Frame the shot.** Set the focal length in **Lens settings → Lens Zoom (FOV)**
+   (low FOV = telephoto/compressed, high FOV = wide). Use **Lens Tilt (Roll)** for
+   a dutch angle, or **Misc → Level Horizon** to snap roll back to 0.
+4. **Light the scene.** Open **World & Scene → Time & Weather**: set the **Time of
+   Day** (and **Pause Time** so it doesn't drift), pick a **Weather**, or blend
+   two weathers for in-between skies.
+5. **Freeze the moment.** To catch fast action, use **World & Scene → Freeze All
+   Entities** (peds/vehicles stop, camera + particles stay live) or **Slow
+   Motion**. **Pause Game** halts everything (you can't fly while it's on).
+6. **Add depth.** Turn on **Depth of Field**. Use **Auto-Focus** to lock onto
+   whatever's under the center of the screen, or set **Manual Focus Dist.** and
+   the near/far ranges yourself.
+7. **Capture.** Close the menu for a clean frame, then take the shot with your
+   normal screenshot key, ReShade, or **F10** (saves a PNG to
+   `SimpleCamera_Captures/`, requires the ReShade add-on).
+8. **Leave.** Open the menu → **Exit** (or controller **LB+B**) to return the
+   camera to the player.
+
+### B. Following / filming a moving subject
+
+Two ways to keep a moving car/ped in your shot:
+
+- **Make the subject drive itself — Auto Drive.** Get in a car, drop a **map
+  waypoint** (or use *Drive Anywhere*), then **World & Scene → Auto Drive →
+  Enabled**. The AI drives; you're free to fly the camera around it. Tune
+  **Speed** and **Driving Style**.
+- **Lock the camera to the subject — Follow / Entity Lock.** In **Movement →
+  Follow Target**, choose **Player** or **Aimed Entity** (aim at a vehicle/ped and
+  lock on). The camera then rides along:
+  - **Rigid Mode off** — the camera holds a fixed *world* orientation but moves
+    with the subject's position.
+  - **Rigid Mode on** — the camera is bolted on (orbits + rotates with the
+    subject), like a hood cam.
+
+Combine them: enable **Auto Drive** so a car drives a route, then **lock** the
+camera to that car for a hands-free tracking shot.
+
+### C. Cinematic camera move (sequence)
+
+1. **Enter.** Press **F5** → **Camera Sequence**. An empty sequence is created;
+   you can free-fly while the menu is open.
+2. **Lay down keyframes.** Fly to your opening pose and press **F6** (*Capture
+   Current Pose*). Fly to the next position/angle/zoom, press **F6** again.
+   Repeat for each "beat" of the move.
+3. **Shape the motion.** Open **Pose Keyframes…** to adjust each keyframe's
+   **time**, **easing** (**Ease-In-Out** for smooth starts/stops, **Hold** to
+   pause on a pose) and **path type** (**Spline** for flowing curves through your
+   points, **Linear** for straight dolly moves).
+4. **Automate effects (optional).** In **Effect Events…**, schedule changes along
+   the timeline — turn **shake** on/off or change its strength, or ramp **World
+   Speed** for a slow-mo beat. Mark an event **ramp** to ease between values.
+5. **Lock to a subject (optional).** To make the whole move ride with a vehicle:
+   lock onto it in Free Camera first (Follow Target → Aimed Entity), then in the
+   Sequence menu use **Follow & Entity Lock… → Apply Lock to All**. With Rigid
+   Mode off the keyframes just travel with the car; with it on they orbit it.
+6. **Preview & refine.** **F7** plays, **F8** stops, **F9** jumps to the next
+   pose. Tune **Speed** and **Loop**. For a seamless repeat, use **Close Loop**
+   (it reports the gap between the first and last keyframe).
+7. **Clean up for capture.** Turn **Show Markers** off so the keyframe spheres
+   and path line don't appear in the footage.
+8. **Save.** **Save All to INI** persists your sequences to
+   `SimpleCamera_Sequences.ini` between sessions.
+
+### D. From sequence to finished video
+
+1. Build and save a sequence (Workflow C).
+2. **Enable the `IgcsDOF` technique in the ReShade menu** (required — see
+   [Rendering an Image Sequence](#rendering-an-image-sequence)).
+3. **Render to Images…** → set FPS / motion blur / format → **Start Render**.
+   Frames land in `SimpleCamera_Captures/render_NNNN/`.
+4. Assemble the frames into a video at the **same FPS** in your editor, or with
+   ffmpeg:
+   ```
+   ffmpeg -framerate 30 -i frame_%06d.png -c:v libx264 -crf 16 -preset slow \
+     -pix_fmt yuv420p -color_range tv -colorspace bt709 -movflags +faststart out.mp4
+   ```
+   (The color flags keep the contrast matching the rendered frames — see
+   Troubleshooting if your video looks more contrasty than the stills.)
+
+### Tips & techniques
+
+- **Drone mode** (Movement → Movement Style) gives weighty, momentum-based motion
+  with auto-banking — great for organic fly-throughs and hand-held feel.
+- **Walk mode** pins the camera to a fixed eye height above the ground for
+  natural walking/character-height shots.
+- **Acrobatic (Quaternion) rotation** (Movement → Rotation Style) removes the
+  gimbal limit so you can roll and pitch freely for FPV-style moves.
+- **Procedural shake** (Camera Effects) adds life to otherwise-static shots; the
+  speed-coupling makes it react to how fast the camera is moving.
+- **Save position on exit** (Misc) lets you toggle the flycam off and back on
+  without losing your spot.
+- **Info Overlay** (World & Scene) shows live position/rotation/FOV — handy for
+  matching or noting a shot.
 
 ---
 
