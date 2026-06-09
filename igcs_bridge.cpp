@@ -41,6 +41,7 @@ static float s_savedPosX, s_savedPosY, s_savedPosZ;
 static float s_savedPitch, s_savedYaw, s_savedRoll;
 static float s_savedFOV;
 static bool s_savedFreezeWorld = false;
+static float s_savedTimeScale = 1.0f;
 
 // ============================================================
 //  Euler to Quaternion conversion
@@ -117,9 +118,18 @@ extern "C" __declspec(dllexport) int IGCS_StartScreenshotSession(uint8_t type) {
   s_savedRoll = roll;
   s_savedFOV = g_CamFOV;
 
-  // Auto-enable world freeze for DoF session
+  // Keep the scene near-still for the duration of the DoF session WITHOUT
+  // freezing the camera. IGCS DoF works by nudging the camera to many small
+  // offsets and blending the frames, so the camera + rendering MUST stay live
+  // — Pause Game (SET_GAME_PAUSED) would freeze the camera too and break the
+  // session. Freezing entities doesn't help either: it pins positions but
+  // animations keep playing. Slowing time to 1% gets the best of both: peds /
+  // vehicles / cloth / particles barely move between samples, while the camera
+  // and ReShade keep running normally. Restored in EndScreenshotSession.
   s_savedFreezeWorld = g_FreezeWorld;
-  g_FreezeWorld = true;
+  g_FreezeWorld = false; // never Pause Game during a session — it stalls the cam
+  s_savedTimeScale = g_WorldTimeScale;
+  g_WorldTimeScale = 0.01f; // 1% — UpdateGlobalEffects applies SET_TIME_SCALE
 
   IGCS_ResetOffsets();
   s_screenshotSessionActive = true;
@@ -132,9 +142,11 @@ extern "C" __declspec(dllexport) void IGCS_EndScreenshotSession() {
     IGCS_ResetOffsets();
     g_CamFOV = s_savedFOV;
 
-    // Restore world freeze to pre-session state
+    // Restore the pre-session world-speed state (we slowed time to 1% on
+    // start; UpdateGlobalEffects will reapply or clear the time scale).
     g_FreezeWorld = s_savedFreezeWorld;
-    if (!g_FreezeWorld) {
+    g_WorldTimeScale = s_savedTimeScale;
+    if (!g_FreezeWorld && g_WorldTimeScale >= 0.999f) {
       GAMEPLAY::SET_TIME_SCALE(1.0f);
     }
   }

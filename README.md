@@ -354,9 +354,12 @@ not video.
 > mode (the IGCS link is disabled in Camera Sequence mode).
 
 1. **Frame the shot in Free Camera.** Compose precisely — once the DoF session
-   starts you can't move the camera. Because the technique shifts the camera and
-   blends many frames, the scene should be **still**: use **World & Scene → Pause
-   Game** (or **Freeze All Entities**) so nothing moves between samples.
+   starts you can't move the camera. You **don't** need to freeze the scene
+   yourself: Simple Camera **automatically slows the world to 1%** for the
+   duration of the session, so peds/vehicles/cloth/particles barely move between
+   samples while the camera and rendering stay live. (Don't use **Pause Game** —
+   it freezes the camera too and breaks the session; **Freeze All Entities**
+   doesn't help either, since animations keep playing.)
 2. **Avoid conflicts.** Turn **Simple Camera's own Depth of Field OFF** (Depth of
    field → Depth of Field) so the two don't fight, and **disable the game's
    TAA/anti-aliasing** — the multi-frame blend does its own anti-aliasing and TAA
