@@ -30,6 +30,7 @@ network natives when running under FiveM).
   - [B. Following / filming a moving subject](#b-following--filming-a-moving-subject)
   - [C. Cinematic camera move (sequence)](#c-cinematic-camera-move-sequence)
   - [D. From sequence to finished video](#d-from-sequence-to-finished-video)
+  - [E. IGCS Depth of Field (cinematic bokeh)](#e-igcs-depth-of-field-cinematic-bokeh)
   - [Tips & techniques](#tips--techniques)
 - [Rendering an Image Sequence](#rendering-an-image-sequence)
 - [ReShade / IGCS Connector](#reshade--igcs-connector)
@@ -338,6 +339,51 @@ camera to that car for a hands-free tracking shot.
    (The color flags keep the contrast matching the rendered frames — see
    Troubleshooting if your video looks more contrasty than the stills.)
 
+### E. IGCS Depth of Field (cinematic bokeh)
+
+**IGCS Depth of Field** (IgcsDof, by Frans Bouma / Otis_Inf) is a far higher-
+quality depth of field than the in-game one. Instead of a post-process blur, it
+nudges the camera to many tiny offsets and blends the results, simulating real
+lens optics — so you get true, photographic bokeh with proper highlights. Simple
+Camera acts as the "camera tools" it drives. This is for a **single hero still**,
+not video.
+
+> Prerequisites: ReShade (add-on support) + the **IgcsConnector** add-on, with
+> the **`IgcsDof.fx`** shader present, exactly as for
+> [rendering](#rendering-an-image-sequence). It only works in **Free Camera**
+> mode (the IGCS link is disabled in Camera Sequence mode).
+
+1. **Frame the shot in Free Camera.** Compose precisely — once the DoF session
+   starts you can't move the camera. Because the technique shifts the camera and
+   blends many frames, the scene should be **still**: use **World & Scene → Pause
+   Game** (or **Freeze All Entities**) so nothing moves between samples.
+2. **Avoid conflicts.** Turn **Simple Camera's own Depth of Field OFF** (Depth of
+   field → Depth of Field) so the two don't fight, and **disable the game's
+   TAA/anti-aliasing** — the multi-frame blend does its own anti-aliasing and TAA
+   ghosting will smear the result.
+3. **Open ReShade** (Home), confirm the **`IgcsDOF`** technique is enabled, then
+   go to the **Add-ons** tab → **IGCS Connector** → **Start depth-of-field
+   session**. Simple Camera hands camera control to the add-on (your normal
+   flight input is locked for the duration — that's expected).
+4. **Set focus.** Drag **Focus delta** until the in-focus plane lands on your
+   subject; enable **Show magnifier** and check a fine detail (e.g. the eyes) to
+   confirm it's razor-sharp. Set **Max bokeh size** for how strong the blur is.
+5. **Shape the bokeh (optional).** Pick circular (points-in-innermost-ring +
+   number-of-rings) or aperture-shaped (vertices / rounding / rotation), and
+   taste-tune **Highlight boost/gamma**, anamorphic factor, fringing, cat-eye,
+   etc. More rings = smoother bokeh but many more frames to render.
+6. **Tune frame timing if needed.** Start with **frames in flight = 1** and
+   **frames to wait = 0**. If the *in-focus* area comes out soft/blurry, cancel,
+   raise **frames in flight** to 2–3 (engines with long render pipelines need
+   more), and try again.
+7. **Render.** Click **Start render** and let the blend finish (watch the
+   progress bar).
+8. **Save, then end.** Press **PrintScreen** to save the result via ReShade —
+   **then** click **End session**. Ending the session discards the blended image,
+   so screenshot *first*.
+
+Full tool manual & controls: <https://opm.fransbouma.com/igcsdof.htm>
+
 ### Tips & techniques
 
 - **Drone mode** (Movement → Movement Style) gives weighty, momentum-based motion
@@ -423,11 +469,16 @@ its advanced photo features (e.g. multi-shot / high-resolution captures and DoF
 sessions). When such a session is active, Simple Camera hands control of the
 camera to the add-on so the two never fight.
 
-The same shared channel is what powers **F10 single-frame capture** and the
-**image-sequence renderer**. For those to work you must also **enable the
-`IgcsDOF` technique (`IgcsDof.fx`) in the ReShade in-game menu** — frame capture
-is routed through that shader. None of the core free-camera features need
-ReShade — it's only required for the capture/render and IGCS tooling.
+The same shared channel is what powers **F10 single-frame capture**, the
+**image-sequence renderer**, and **IGCS Depth of Field** (the multi-frame optical
+bokeh tool — see [Workflow E](#e-igcs-depth-of-field-cinematic-bokeh)). For any of
+these you must also **enable the `IgcsDOF` technique (`IgcsDof.fx`) in the ReShade
+in-game menu** — capture is routed through that shader. None of the core
+free-camera features need ReShade — it's only required for the capture/render and
+IGCS tooling.
+
+> Credit: the IGCS Connector add-on and IgcsDof shader are by **Frans Bouma
+> (Otis_Inf)**. Full DoF manual: <https://opm.fransbouma.com/igcsdof.htm>.
 
 ---
 
