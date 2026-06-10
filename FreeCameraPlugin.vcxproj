@@ -7,14 +7,18 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="keyboard.cpp" />
-    <ClCompile Include="camera.cpp" />
-    <ClCompile Include="menu.cpp" />
-    <ClCompile Include="script.cpp" />
-    <ClCompile Include="main.cpp" />
-    <ClCompile Include="igcs_bridge.cpp" />
-    <ClCompile Include="sequence.cpp" />
-    <ClCompile Include="fx_capture.cpp" />
+    <ClCompile Include="src\core\keyboard.cpp" />
+    <ClCompile Include="src\camera\camera.cpp" />
+    <ClCompile Include="src\menu\menu.cpp" />
+    <ClCompile Include="src\menu\scmenu.cpp" />
+    <ClCompile Include="src\core\script.cpp" />
+    <ClCompile Include="src\core\main.cpp" />
+    <ClCompile Include="src\capture\igcs_bridge.cpp" />
+    <ClCompile Include="src\camera\sequence.cpp" />
+    <ClCompile Include="src\capture\fx_capture.cpp" />
+    <ClCompile Include="src\gui\MenuDraw.cpp" />
+    <ClCompile Include="src\gui\NativeMenu.cpp" />
+    <ClCompile Include="src\gui\TextInput.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="external\scripthook_sdk\inc\main.h" />
@@ -22,13 +26,17 @@
     <ClInclude Include="external\scripthook_sdk\inc\natives.h" />
     <ClInclude Include="external\scripthook_sdk\inc\nativeCaller.h" />
     <ClInclude Include="external\scripthook_sdk\inc\types.h" />
-    <ClInclude Include="keyboard.h" />
-    <ClInclude Include="camera.h" />
-    <ClInclude Include="menu.h" />
-    <ClInclude Include="script.h" />
-    <ClInclude Include="igcs_bridge.h" />
-    <ClInclude Include="sequence.h" />
-    <ClInclude Include="fx_capture.h" />
+    <ClInclude Include="src\core\keyboard.h" />
+    <ClInclude Include="src\camera\camera.h" />
+    <ClInclude Include="src\menu\menu.h" />
+    <ClInclude Include="src\menu\scmenu.h" />
+    <ClInclude Include="src\gui\MenuDraw.h" />
+    <ClInclude Include="src\gui\NativeMenu.h" />
+    <ClInclude Include="src\gui\TextInput.h" />
+    <ClInclude Include="src\core\script.h" />
+    <ClInclude Include="src\capture\igcs_bridge.h" />
+    <ClInclude Include="src\camera\sequence.h" />
+    <ClInclude Include="src\capture\fx_capture.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="fx_asi_build.rc" />
@@ -73,7 +81,8 @@
       <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;FREECAMERAPLUGIN_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <FloatingPointModel>Fast</FloatingPointModel>
-      <AdditionalIncludeDirectories>external\scripthook_sdk\inc;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalIncludeDirectories>.;src\core;src\camera;src\capture;src\menu;src\gui;external\scripthook_sdk\inc;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>

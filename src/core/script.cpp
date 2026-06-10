@@ -12,6 +12,7 @@
 #include "igcs_bridge.h"
 #include "keyboard.h"
 #include "menu.h"
+#include "scmenu.h"
 #include "sequence.h"
 
 #include "external\scripthook_sdk\inc\natives.h"
@@ -38,6 +39,10 @@ void main() {
   // Map the shared capture channel so the ReShade addon can write frames.
   FxCapture_Init();
 
+  // Build the new (gtam framework) menu tree. During migration it lives on F11
+  // alongside the classic F5 menu so both can be compared in-game.
+  SCMenu_Init();
+
   // Never start with the free camera already engaged, regardless of what was
   // persisted — the user always toggles it on explicitly (or via the picker).
   g_FreeCamActive = false;
@@ -45,10 +50,13 @@ void main() {
   while (true) {
     // Check for menu toggle — F5 on keyboard, or LB+RB on a controller (a pad
     // has no menu key otherwise).
+    // F5 (and controller LB+RB) — the menu. Frame-driven: toggle on press,
+    // drive every frame below.
     if (IsMenuTogglePressed() || IsControllerMenuCombo()) {
       MenuBeep();
-      ProcessConfigMenu();
+      SCMenu_Toggle();
     }
+    SCMenu_Update();
 
     // Controller LB+B exits Free Camera straight back to the picker, so pad
     // users can bail without opening the menu.

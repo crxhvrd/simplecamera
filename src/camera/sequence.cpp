@@ -85,6 +85,10 @@ int g_SeqHotkeyPlay = VK_F7;
 int g_SeqHotkeyStop = VK_F8;
 int g_SeqHotkeyNext = VK_F9;
 bool g_SequenceShowMarkers = true;
+// Marker / path appearance (overridable via the Appearance menu + INI).
+int g_SeqMarkerR = 80, g_SeqMarkerG = 200, g_SeqMarkerB = 80;
+float g_SeqMarkerSize = 0.30f;
+int g_SeqPathR = 100, g_SeqPathG = 180, g_SeqPathB = 255;
 static int s_EditingPoseIdx = -1;
 
 // Snapshot of the user's shake configuration captured the moment Play
@@ -1450,7 +1454,8 @@ static void DrawSequenceMarkers() {
     else if (isCurrent)    { r = 255; g = 220; b =   0; size = 0.45f; }
     else if (isSeam)       { r =   0; g = 220; b = 255; size = 0.45f; }
     else if (isLockedLive) { r =  60; g = 180; b = 200; size = 0.32f; }
-    else                   { r =  80; g = 200; b =  80; size = 0.30f; }
+    else                   { r = g_SeqMarkerR; g = g_SeqMarkerG; b = g_SeqMarkerB;
+                             size = g_SeqMarkerSize; }
     int a = s_Playing ? 90 : 200;
     if (isEditing) a = 230; // always vivid so the editor target is unmistakable
     if (isSeam && !s_Playing) a = 230;
@@ -1492,9 +1497,9 @@ static void DrawSequenceMarkers() {
     int alpha = s_Playing ? 80 : 140;
     // Seam segment gets the cyan tint so it visually pops as the loop arc.
     bool seamSegment = closed && (i + 1) == N - 1;
-    int lineR = seamSegment ? 0   : 100;
-    int lineG = seamSegment ? 220 : 180;
-    int lineB = seamSegment ? 255 : 255;
+    int lineR = seamSegment ? 0   : g_SeqPathR;
+    int lineG = seamSegment ? 220 : g_SeqPathG;
+    int lineB = seamSegment ? 255 : g_SeqPathB;
 
     if (b.path == PATH_SPLINE) {
       CtrlRef cp0 = ResolveCtrl(i - 1, N, closed, dur);

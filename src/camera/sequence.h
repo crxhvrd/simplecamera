@@ -295,6 +295,14 @@ extern int g_SeqHotkeyNext;    // default VK_F9
 // in the recording.
 extern bool g_SequenceShowMarkers;
 
+// Appearance of the in-world keyframe markers + path preview (customizable in
+// the menu's Appearance page, persisted to SimpleCamera.ini). These tint the
+// "normal" keyframe marker + path line; the special states (editing/current/
+// loop-seam/locked) keep their distinct semantic colors.
+extern int g_SeqMarkerR, g_SeqMarkerG, g_SeqMarkerB; // normal keyframe color
+extern float g_SeqMarkerSize;                         // normal keyframe size
+extern int g_SeqPathR, g_SeqPathG, g_SeqPathB;        // path line color
+
 // Track which pose keyframe (if any) is currently open in the per-pose
 // editor menu, so its in-world marker can be highlighted distinctly.
 // -1 = nothing being edited.

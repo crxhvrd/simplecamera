@@ -4,6 +4,7 @@
 */
 
 #include "keyboard.h"
+#include "TextInput.h" // forward keystrokes to the menu's inline value editor
 
 const int KEYS_SIZE = 255;
 
@@ -16,6 +17,10 @@ struct {
 
 void OnKeyboardMessage(DWORD key, WORD repeats, BYTE scanCode, BOOL isExtended,
                        BOOL isWithAlt, BOOL wasDownBefore, BOOL isUpNow) {
+  // Route to the menu's focused text field (no-op unless one is focused), so
+  // you can type exact values in-menu without the game's on-screen keyboard.
+  gtam::TextInput::FeedGlobal(key, scanCode, isExtended, isUpNow, isWithAlt);
+
   if (key < KEYS_SIZE) {
     keyStates[key].time = GetTickCount();
     keyStates[key].isWithAlt = isWithAlt;
