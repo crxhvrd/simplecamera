@@ -1017,11 +1017,11 @@ static void RebuildRoot() {
     g_Root.AddSubmenu("Lens", &g_Lens, "Field of view and roll.");
     g_Root.AddSubmenu("Depth of Field", &g_DoF, "Focus and bokeh range.");
     g_Root.AddSubmenu("Camera Effects", &g_Effects, "Procedural handheld shake.");
+    g_Root.AddSubmenu("Misc", &g_Misc, "Player linkage and quick actions.");
     g_Root.AddSubmenu("World & Scene", &g_World,
                       "Time, weather, auto-drive, HUD, player.");
     g_Root.AddSubmenu("Appearance", &g_Appearance,
                       "Menu position, scale, accent colour, and sequence marker/path look.");
-    g_Root.AddSubmenu("Misc", &g_Misc, "Player linkage and quick actions.");
     g_Root.AddSeparator("");
     g_Root.AddButton("Save Settings", [] {
       SaveSettings();
@@ -1075,12 +1075,12 @@ static void RebuildRoot() {
                     Sequence_ActiveIndex() + 1, Sequence_Count());
           return std::string(b);
         };
+    g_Root.AddSubmenu("Render to Images", &g_SeqRender,
+                      "Export the sequence as a numbered image sequence (needs ReShade addon).");
     g_Root.AddSubmenu("World & Scene", &g_World,
                       "Time, weather, HUD and player visibility.");
     g_Root.AddSubmenu("Appearance", &g_Appearance,
                       "Menu position, scale, accent colour, and sequence marker/path look.");
-    g_Root.AddSubmenu("Render to Images", &g_SeqRender,
-                      "Export the sequence as a numbered image sequence (needs ReShade addon).");
   } else {
     // ---- Off ---- (no camera engaged, but world/menu config is still useful)
     g_Root.AddSeparator("");
