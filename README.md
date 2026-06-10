@@ -124,15 +124,14 @@ network natives when running under FiveM).
 
 ## Quick Start
 
-1. Press **F5**. The first time, you'll see a **mode picker** — choose
+1. Press **F5** to open the menu, then set the top row, **Camera Mode**, to
    **Free Camera**.
 2. The flycam engages immediately (HUD and your character auto-hide).
 3. Fly with **WASD**, look with the **mouse**, raise/lower with **Space / Ctrl**.
 4. Press **F5** again any time to open the settings menu and tweak the shot.
 5. Close the menu and you're composing. Press **F10** to save a clean frame
    (requires the ReShade add-on — see below), or use your normal screenshot key.
-6. To leave the flycam, open the menu and choose **Exit** (returns to the
-   picker).
+6. To leave the flycam, open the menu and set **Camera Mode → Off**.
 
 ---
 
@@ -157,7 +156,7 @@ network natives when running under FiveM).
 | Action | Button |
 | --- | --- |
 | Open menu | **LB + RB** |
-| Exit flycam to picker | **LB + B** |
+| Exit flycam (camera off) | **LB + B** |
 | Move | **Left stick** |
 | Look | **Right stick** |
 | Up / down | **RT / LT** |
@@ -188,10 +187,10 @@ network natives when running under FiveM).
 
 ## The Menu
 
-Press **F5** to open. The first F5 of a session shows the **mode picker**
-(Free Camera vs. Camera Sequence); after that, F5 reopens the menu for whichever
-mode you're in. Choosing **Exit** in either mode returns you to the picker so you
-can switch.
+Press **F5** to open. The top row, **Camera Mode**, switches between **Off**,
+**Free Camera**, and **Camera Sequence** — selecting a mode engages it
+immediately, and it stays active when you close the menu. Set it to **Off** to
+put the camera away.
 
 ### Free Camera menu
 
@@ -203,7 +202,8 @@ can switch.
 | **Camera effects** | Procedural shake: enable, **preset** (Off / Subtle / Handheld / Vehicle / Earthquake / Custom), base amplitude & frequency, speed→amplitude and speed→frequency coupling, rotation/position weighting, **Stop When Still**, **Randomize Pattern**. |
 | **World & scene** | **Time & Weather** (pause time, time of day, time-lapse, primary/secondary weather + blend), **Auto Drive** (see below), **Pause Game**, **Freeze All Entities**, **Slow Motion**, hide HUD, hide player, disable vehicle shake, info overlay. |
 | **Misc settings** | Move player with camera, save position on exit, lock camera position, allow player to move, snap camera to player, level horizon, save settings to INI, reset to defaults. |
-| **Exit** | Tear down the flycam and return to the mode picker. |
+
+> To leave Free Camera, set the top **Camera Mode** row to **Off**.
 
 ### Camera Sequence menu
 
@@ -222,7 +222,9 @@ can switch.
 | **Show Markers** | Toggle the in-world keyframe spheres + path preview (turn off when recording). |
 | **World & Scene…** | Same scene controls as Free Camera. |
 | **Render to Images…** | Offline image-sequence renderer (see below). |
-| **Exit** | Return to the mode picker. |
+
+> To leave Camera Sequence, set the top **Camera Mode** row to **Off** (or
+> straight to **Free Camera**). The mode stays active when the menu is closed.
 
 ### Auto Drive
 
@@ -250,12 +252,13 @@ the features combine.
 
 The golden rule: **F5 opens the menu, and the camera keeps living while the menu
 is open** — so you compose with the menu up, then close it (F5 / Backspace) for a
-clean frame. Closing the menu does *not* exit the flycam; use **Exit** for that.
+clean frame. Closing the menu does *not* exit the flycam; set **Camera Mode →
+Off** for that.
 
 ### A. Photo Mode — capturing a still
 
-1. **Enter.** Press **F5**, choose **Free Camera**. The flycam engages and the
-   HUD + your character auto-hide.
+1. **Enter.** Press **F5** and set **Camera Mode → Free Camera**. The flycam
+   engages and the HUD + your character auto-hide.
 2. **Get to the spot.** Fly with **WASD** + **Space/Ctrl**, look with the mouse.
    Hold **Shift** to cover ground fast, **Alt** for slow, precise framing. Mouse
    wheel changes the base fly speed. If you keep clipping into geometry, turn on
@@ -275,8 +278,8 @@ clean frame. Closing the menu does *not* exit the flycam; use **Exit** for that.
 7. **Capture.** Close the menu for a clean frame, then take the shot with your
    normal screenshot key, ReShade, or **F10** (saves a PNG to
    `SimpleCamera_Captures/`, requires the ReShade add-on).
-8. **Leave.** Open the menu → **Exit** (or controller **LB+B**) to return the
-   camera to the player.
+8. **Leave.** Open the menu and set **Camera Mode → Off** (or controller
+   **LB+B**) to return the camera to the player.
 
 ### B. Following / filming a moving subject
 
@@ -299,8 +302,8 @@ camera to that car for a hands-free tracking shot.
 
 ### C. Cinematic camera move (sequence)
 
-1. **Enter.** Press **F5** → **Camera Sequence**. An empty sequence is created;
-   you can free-fly while the menu is open.
+1. **Enter.** Press **F5** and set **Camera Mode → Camera Sequence**. An empty
+   sequence is created; you can free-fly while the menu is open.
 2. **Lay down keyframes.** Fly to your opening pose and press **F6** (*Capture
    Current Pose*). Fly to the next position/angle/zoom, press **F6** again.
    Repeat for each "beat" of the move.
