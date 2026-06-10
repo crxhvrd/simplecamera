@@ -31,6 +31,21 @@ void RectOutline(float x, float y, float w, float h, const Color &c,
   RectTL(x + w - tx, y, tx, h, c);    // right
 }
 
+// GTA's _ADD_TEXT_COMPONENT_STRING silently truncates each call at ~99 chars.
+// Split longer strings across multiple components — the engine concatenates them
+// into one continuous string for measuring / wrapping / drawing.
+static void AddTextComponent(const std::string &s) {
+  const size_t MAX = 99;
+  if (s.size() <= MAX) {
+    UI::_ADD_TEXT_COMPONENT_STRING((LPSTR)s.c_str());
+    return;
+  }
+  for (size_t i = 0; i < s.size(); i += MAX) {
+    std::string chunk = s.substr(i, MAX);
+    UI::_ADD_TEXT_COMPONENT_STRING((LPSTR)chunk.c_str());
+  }
+}
+
 void Text(const std::string &s, float x, float y, float scale, int font,
           const Color &c, Align align, float rightEdgeFrac) {
   UI::SET_TEXT_FONT(font);
@@ -44,7 +59,7 @@ void Text(const std::string &s, float x, float y, float scale, int font,
     UI::SET_TEXT_WRAP(0.0f, rightEdgeFrac);
   }
   UI::_SET_TEXT_ENTRY((char *)"STRING");
-  UI::_ADD_TEXT_COMPONENT_STRING((LPSTR)s.c_str());
+  AddTextComponent(s);
   UI::_DRAW_TEXT(x, y);
   // These are sticky global text states; reset so the next call starts clean.
   UI::SET_TEXT_RIGHT_JUSTIFY(0);
@@ -57,7 +72,7 @@ float TextWidth(const std::string &s, float scale, int font) {
   UI::SET_TEXT_DROPSHADOW(0, 0, 0, 0, 0);
   UI::SET_TEXT_EDGE(0, 0, 0, 0, 0);
   UI::_SET_TEXT_ENTRY_FOR_WIDTH((char *)"STRING");
-  UI::_ADD_TEXT_COMPONENT_STRING((LPSTR)s.c_str());
+  AddTextComponent(s);
   return UI::_GET_TEXT_SCREEN_WIDTH(TRUE);
 }
 
@@ -72,11 +87,40 @@ int TextLineCount(const std::string &s, float scale, int font,
   UI::SET_TEXT_SCALE(0.0f, scale);
   UI::SET_TEXT_WRAP(wrapStartFrac, wrapEndFrac);
   UI::_SET_TEXT_GXT_ENTRY((char *)"STRING");
-  UI::_ADD_TEXT_COMPONENT_STRING((LPSTR)s.c_str());
+  AddTextComponent(s);
   // 0x9040DFB09BE75706 = _END_TEXT_COMMAND_GET_NUMBER_OF_LINES(x, y).
   int n = invoke<int>(0x9040DFB09BE75706, wrapStartFrac, 0.0f);
   UI::SET_TEXT_WRAP(0.0f, 1.0f);
   return n < 1 ? 1 : n;
+}
+
+std::vector<std::string> TextWrap(const std::string &s, float scale, int font,
+                                  float maxWidthFrac) {
+  std::vector<std::string> lines;
+  std::string line;
+  size_t i = 0;
+  const size_t n = s.size();
+  while (i < n) {
+    // Pull the next whitespace-delimited word (collapsing runs of spaces).
+    while (i < n && s[i] == ' ') i++;
+    if (i >= n) break;
+    size_t wEnd = i;
+    while (wEnd < n && s[wEnd] != ' ') wEnd++;
+    std::string word = s.substr(i, wEnd - i);
+    i = wEnd;
+
+    std::string candidate = line.empty() ? word : line + " " + word;
+    if (line.empty() ||
+        TextWidth(candidate, scale, font) <= maxWidthFrac) {
+      line = candidate; // fits (or first word on the line — keep it regardless)
+    } else {
+      lines.push_back(line); // commit the full line, start fresh with this word
+      line = word;
+    }
+  }
+  if (!line.empty()) lines.push_back(line);
+  if (lines.empty()) lines.push_back(std::string());
+  return lines;
 }
 
 void Sprite(const char *dict, const char *name, float xc, float yc, float w,

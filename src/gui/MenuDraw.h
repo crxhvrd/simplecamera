@@ -14,6 +14,7 @@
 #include "NativeMenu.h" // for gtam::Color
 
 #include <string>
+#include <vector>
 
 namespace gtam {
 namespace draw {
@@ -52,6 +53,14 @@ float TextLineHeight(float scale, int font);
 // scale/font. Lets a panel auto-size to its (possibly multi-line) text.
 int TextLineCount(const std::string &s, float scale, int font,
                   float wrapStartFrac, float wrapEndFrac);
+
+// Word-wrap `s` into lines that each fit within `maxWidthFrac` at the given
+// scale/font, measured with our own TextWidth. Use this instead of the engine's
+// SET_TEXT_WRAP when you need both an exact line count AND strings short enough
+// to dodge GTA's 99-char-per-DRAW truncation: draw each returned line on its own
+// row. A single word longer than the width is kept whole on its own line.
+std::vector<std::string> TextWrap(const std::string &s, float scale, int font,
+                                  float maxWidthFrac);
 
 // Draw a sprite (texture) from a streamed dictionary, centre-anchored, with a
 // tint. Width/height are screen fractions. No-op until the dict is loaded.

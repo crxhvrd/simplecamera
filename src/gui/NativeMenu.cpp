@@ -928,39 +928,36 @@ void MenuController::draw() {
   if (th.showDescription && m->selected >= 0 && m->selected < n) {
     const std::string &d = m->items[m->selected].description;
     if (!d.empty()) {
-      // Auto-size the panel to however many lines the text wraps to, so long
-      // descriptions never clip. Word-wrap breaks at spaces, so each line holds
-      // a bit less than the full panel width — we estimate lines against ~85% of
-      // the width (and ceil) so a tooltip that just spills over never gets a
-      // too-short box, then take the MAX with the engine's own line count. Each
-      // line gets a generous advance (1.4x the scale height) because GTA's real
-      // line advance exceeds GET_TEXT_SCALE_HEIGHT.
+      // Wrap the text OURSELVES rather than via SET_TEXT_WRAP. GTA's substring
+      // text component (_ADD_TEXT_COMPONENT_STRING) hard-truncates each DRAW at
+      // ~99 chars and does NOT reliably concatenate multiple components in this
+      // build, so a long description drawn in one call loses its tail (e.g.
+      // "...not used in Synce"). TextWrap measures with our own TextWidth and
+      // returns short per-line strings; we draw each on its own row — no line is
+      // anywhere near the 99-char limit, and the line count is exact, so the box
+      // hugs the text with no clipping and no empty slab.
       float descScale = th.descScale * s;
       int descFont = th.subtitleFont;
       float availW = rightEdge - leftEdge;
-      float effW = availW * 0.80f; // word-wrap raggedness margin
-      float tw = gtam::draw::TextWidth(d, descScale, descFont);
-      int linesEst = (int)(tw / effW);
-      if (tw > linesEst * effW + 0.0001f) linesEst++; // ceil
-      if (linesEst < 1) linesEst = 1;
-      int linesNat = gtam::draw::TextLineCount(d, descScale, descFont, leftEdge,
-                                               rightEdge);
-      int lines = linesNat > linesEst ? linesNat : linesEst;
-      // Word-wrap can spill one more line than the width estimate predicts, and
-      // the engine line count isn't always reliable — so give any MULTI-line
-      // tooltip one extra line of height. Single-liners stay tight.
-      if (lines >= 2) lines += 1;
+      std::vector<std::string> wrapped =
+          gtam::draw::TextWrap(d, descScale, descFont, availW);
+      int lines = (int)wrapped.size();
+      if (lines < 1) lines = 1;
 
       float lineH = gtam::draw::TextLineHeight(descScale, descFont);
       float padY = gtam::draw::PxY(9.0f * s);
-      float dH = 2.0f * padY + lines * lineH * 1.5f;
+      // GTA's real per-line advance runs a touch taller than GET_TEXT_SCALE_HEIGHT.
+      const float kLineAdvance = 1.4f;
+      float dH = 2.0f * padY + lines * lineH * kLineAdvance;
       float minH = gtam::draw::PxY(th.descHeightPx * s);
       if (dH < minH) dH = minH;
       float dy = y + gtam::draw::PxY(4.0f);
       RectTL(xFrac, dy, wFrac, dH, th.descBg);
-      UI::SET_TEXT_WRAP(leftEdge, rightEdge);
-      Text(d, leftEdge, dy + padY, descScale, descFont, th.descText, Align::Left);
-      UI::SET_TEXT_WRAP(0.0f, 1.0f);
+      float ly = dy + padY;
+      for (const std::string &lineStr : wrapped) {
+        Text(lineStr, leftEdge, ly, descScale, descFont, th.descText, Align::Left);
+        ly += lineH * kLineAdvance;
+      }
       contentBottom = dy + dH;
     }
   }
