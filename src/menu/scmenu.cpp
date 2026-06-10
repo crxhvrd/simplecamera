@@ -390,7 +390,8 @@ static void BuildTree() {
   g_Misc.AddToggle("Save Position on Exit", &g_RememberCamPosition, nullptr,
                    "Remember the camera's spot so it reopens where you left it.");
   g_Misc.AddToggle("Lock Camera Position", &g_LockCamera, nullptr,
-                   "Freeze the camera in place (you can still rotate it).");
+                   "Freeze the camera completely - all movement and rotation "
+                   "input is ignored until you turn this off.");
   g_Misc.AddToggle("Allow Player to Move", &g_EnablePlayerMovement, [](bool on) {
     Ped ped = PLAYER::PLAYER_PED_ID();
     ENTITY::FREEZE_ENTITY_POSITION(ped, on ? FALSE : TRUE);
