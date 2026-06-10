@@ -938,7 +938,7 @@ void MenuController::draw() {
       float descScale = th.descScale * s;
       int descFont = th.subtitleFont;
       float availW = rightEdge - leftEdge;
-      float effW = availW * 0.85f; // word-wrap raggedness margin
+      float effW = availW * 0.80f; // word-wrap raggedness margin
       float tw = gtam::draw::TextWidth(d, descScale, descFont);
       int linesEst = (int)(tw / effW);
       if (tw > linesEst * effW + 0.0001f) linesEst++; // ceil
@@ -946,13 +946,14 @@ void MenuController::draw() {
       int linesNat = gtam::draw::TextLineCount(d, descScale, descFont, leftEdge,
                                                rightEdge);
       int lines = linesNat > linesEst ? linesNat : linesEst;
+      // Word-wrap can spill one more line than the width estimate predicts, and
+      // the engine line count isn't always reliable — so give any MULTI-line
+      // tooltip one extra line of height. Single-liners stay tight.
+      if (lines >= 2) lines += 1;
 
       float lineH = gtam::draw::TextLineHeight(descScale, descFont);
       float padY = gtam::draw::PxY(9.0f * s);
-      // GTA's real line advance is noticeably larger than GET_TEXT_SCALE_HEIGHT,
-      // and the shortfall accumulates over multiple lines — use a generous 1.7x
-      // so 3+ line tooltips never clip (a slightly tall box is harmless).
-      float dH = 2.0f * padY + lines * lineH * 1.7f;
+      float dH = 2.0f * padY + lines * lineH * 1.5f;
       float minH = gtam::draw::PxY(th.descHeightPx * s);
       if (dH < minH) dH = minH;
       float dy = y + gtam::draw::PxY(4.0f);
