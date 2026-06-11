@@ -83,8 +83,8 @@ static gtam::MenuItem *s_pEventValue = nullptr;
 // bind to mirror indices synced from the live (float/int) globals on entry.
 static const float kRenderFps[] = {24, 25, 30, 48, 50, 60, 120, 240};
 static const int kRenderFpsCount = 8;
-static const int kRenderBlur[] = {1, 2, 4, 8, 16, 32, 64};
-static const int kRenderBlurCount = 7;
+static const int kRenderBlur[] = {1, 2, 4, 8, 16, 32, 64, 128};
+static const int kRenderBlurCount = 8;
 static int s_fpsIdx = 5;  // -> 60
 static int s_blurIdx = 0; // -> 1 (Off)
 
@@ -192,6 +192,10 @@ static void BuildTree() {
   ApplyMenuTheme();
   g_Ctrl.SetPosition(g_MenuPosX, g_MenuPosY);
   g_Ctrl.SetScale(g_MenuScale);
+
+  // Reopening returns to the row we closed on (via F5 toggle or Backspace at
+  // the root) instead of jumping back to the top.
+  g_Ctrl.SetRememberRootCursor(true);
 
   g_Ctrl.SetFooterText("");
 
@@ -760,21 +764,16 @@ static void SyncRenderMirrors() {
   s_blurIdx = bj;
 }
 
-// Rebuilt each frame it's shown so options that don't apply to the current mode
-// (Synced vs Camera-led, blur off, PNG) gray out + read "n/a" instead of letting
-// you tweak settings that have no effect.
+// Rebuilt each frame it's shown so options that don't apply right now
+// (blur off, PNG) gray out + read "n/a" instead of letting you tweak settings
+// that have no effect.
 static void RebuildSeqRender() {
   int sel = g_SeqRender.selected, scroll = g_SeqRender.scrollOffset;
   g_SeqRender.items.clear();
 
-  const bool synced = g_RenderSyncWorld != 0;
   const bool blurOn = g_RenderBlurSamples > 1;
   const bool jpeg = g_RenderFormat == 1;
 
-  g_SeqRender.AddList("Render Mode", &g_RenderSyncWorld,
-                      {"Camera-led (static)", "Synced (live world)"}, nullptr,
-                      "Camera-led scrubs a static world; Synced plays the world "
-                      "+ camera on one clock.");
   g_SeqRender.AddList("Output FPS", &s_fpsIdx,
                       {"24", "25", "30", "48", "50", "60", "120", "240"},
                       [](int i) { g_RenderFps = kRenderFps[i]; },
@@ -785,31 +784,13 @@ static void RebuildSeqRender() {
         sprintf_s(b, "%d fps - %d fr", (int)g_RenderFps, frames);
         return std::string(b);
       };
-  {
-    auto &it = g_SeqRender.AddInt("Settle Frames", &g_RenderSettleFrames, 0, 60, 1, nullptr,
-        "Frames to let the scene settle (TAA/streaming) before grabbing. "
-        "Camera-led only - not used in Synced mode.");
-    it.enabled = !synced;
-    if (synced) it.valueGetter = [] { return std::string("n/a"); };
-  }
   g_SeqRender.AddInt("Flush Frames", &g_RenderFlushFrames, 0, 20, 1, nullptr,
                      "Extra clean frames after the progress banner clears, before each grab.");
   g_SeqRender.AddList("Motion Blur", &s_blurIdx,
-                      {"Off", "2", "4", "8", "16", "32", "64"},
+                      {"Off", "2", "4", "8", "16", "32", "64", "128"},
                       [](int i) { g_RenderBlurSamples = kRenderBlur[i]; },
                       "Sub-samples accumulated per output frame (Off = sharp). Requires "
                       "the IgcsDof.fx shader to be enabled in the ReShade effects menu.");
-  {
-    auto &it = g_SeqRender.AddFloat("Shutter", &g_RenderShutter, 0.05f, 1.0f, 0.05f, 2, nullptr,
-        "Shutter angle for motion blur. Used by Camera-led accumulation only, "
-        "and only when Motion Blur is on.");
-    it.enabled = blurOn && !synced;
-    it.valueGetter = [] {
-      if (g_RenderBlurSamples <= 1 || g_RenderSyncWorld) return std::string("n/a");
-      char b[16]; sprintf_s(b, "%d deg", (int)(g_RenderShutter * 360.0f + 0.5f));
-      return std::string(b);
-    };
-  }
   {
     auto &it = g_SeqRender.AddFloat("Highlight Boost", &g_RenderHighlightBoost, 0.0f, 0.95f, 0.05f, 2, nullptr,
         "Extra brightness lift on blur streaks. Only used when Motion Blur is on.");

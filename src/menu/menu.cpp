@@ -432,31 +432,25 @@ static void DisableMenuPhoneControls() {
 //  Sequence в†’ Render to Image Sequence (Phase 2)
 // ============================================================
 //
-// Deterministic offline render: step the playhead by exactly 1/fps, let the
-// scene settle (TAA / streaming), then ask the ReShade addon to grab the
-// frame вЂ” taking as long as each frame needs, independent of real FPS. World
-// entities are pinned so only the camera moves; the result is a numbered PNG
-// sequence ready for ffmpeg. (Camera-led shots; animations still creep under
-// entity-freeze, per the engine limits we established.)
+// Deterministic offline render (Synced): the sequence PLAYS at a slow time
+// scale so the camera, world, shake and effect events all advance on one game
+// clock and stay in lockstep. We grab a frame each time playback crosses the
+// next 1/fps mark вЂ” taking as long as each frame needs, independent of real
+// FPS вЂ” so world motion matches camera speed exactly. The result is a numbered
+// PNG sequence ready for ffmpeg.
 
 // Render settings вЂ” non-static so the new framework menu (scmenu.cpp) can bind
 // to the same state the classic render menu and ProcessRenderToImages use.
 // Declared extern in menu.h.
 float g_RenderFps = 60.0f;     // output frame rate
-int g_RenderSettleFrames = 8;  // frames to wait per step before grabbing
 int g_RenderFlushFrames = 3;   // clean frames after the banner, before grabbing
 int g_RenderBlurSamples = 1;   // motion-blur sub-samples per frame (1 = off)
-float g_RenderShutter = 0.5f;  // shutter window as a fraction of the frame interval
 int g_RenderFormat = 0;        // 0 = PNG (lossless), 1 = JPEG (lightweight)
 int g_RenderJpegQuality = 90;  // JPEG quality 1..100
 float g_RenderSlowmo = 0.0f;   // capture time scale. 0 = AUTO: pick a safe
                                       // value so each frame's capture work fits
                                       // the 1/fps budget (synced stays in sync).
                                       // >0 = fixed time scale.
-int g_RenderSyncWorld = 0;     // 0 = Camera-led (static world, scrub +
-                                      // accumulation blur). 1 = Synced (play the
-                                      // world + camera on one clock so world
-                                      // motion matches camera speed exactly).
 float g_RenderHighlightBoost = 0.3f; // 0..0.99 вЂ” highlight lift in blur accumulation
 
 // Centered progress banner. Only drawn on settle frames вЂ” never on the frame
@@ -508,9 +502,6 @@ void ProcessRenderToImages() {
     return;
   }
 
-  int samples = g_RenderBlurSamples;
-  if (samples < 1) samples = 1;
-
   // Save state we override during the render, restore on exit.
   bool prevFreezeEnt = g_FreezeEntities;
   bool prevHideHUD = g_HideHUD;
@@ -541,64 +532,7 @@ void ProcessRenderToImages() {
   bool addonFail = false;
   int progDone = 0;
 
-  if (!g_RenderSyncWorld) {
-    // ============================================================
-    //  Camera-led (static world) вЂ” deterministic scrub + accumulation blur.
-    //  World is held near-static (slow-mo); camera scrubbed exactly. Shake +
-    //  effect automation are evaluated per output frame from the timeline.
-    // ============================================================
-    Sequence_RenderEffectsBegin();
-
-    // Camera-led holds the world near-static; Auto just means a low fixed scale.
-    const float detSlowmo = (g_RenderSlowmo <= 0.0001f) ? 0.02f : g_RenderSlowmo;
-
-    auto renderTick = [&](float subT, bool drawBanner) {
-      g_RenderShakeTime = subT; // time-driven shake for this exact sub-sample
-      Sequence_SetCurrentTime(subT);
-      DisableMenuPhoneControls();
-      UpdateTimeWeather();
-      UpdateGlobalEffects();
-      GAMEPLAY::SET_TIME_SCALE(detSlowmo);
-      if (drawBanner) DrawRenderProgress(progDone, total, folder);
-      WAIT(0);
-    };
-
-    auto captureSample = [&](float subT, const char *path, int sc, int si) {
-      for (int k = 0; k < g_RenderSettleFrames; ++k) {
-        renderTick(subT, true);
-        bool bBack;
-        GetMenuButtons(NULL, &bBack, NULL, NULL, NULL, NULL);
-        if (bBack) { cancelled = true; return; }
-      }
-      for (int k = 0; k < g_RenderFlushFrames; ++k) renderTick(subT, false);
-      FxCapture_RequestSample(path, sc, si);
-      int guard = 0;
-      while (!FxCapture_IsLastDone() && guard < 300) {
-        renderTick(subT, false);
-        ++guard;
-      }
-      if (guard >= 300) addonFail = true;
-    };
-
-    for (int i = 0; i < total && !cancelled && !addonFail; ++i) {
-      progDone = i;
-      float t = (float)i * stepT; // sequence time for this output frame
-      Sequence_RenderEffectsApply(t);
-      char path[MAX_PATH];
-      sprintf_s(path, "%s\\frame_%06d.%s", folder, i, ext);
-
-      if (samples <= 1) {
-        captureSample(t, path, 1, 0);
-      } else {
-        for (int j = 0; j < samples && !cancelled && !addonFail; ++j) {
-          float subT = t + ((float)j / (float)samples) * g_RenderShutter * stepT;
-          captureSample(subT, path, samples, j);
-        }
-      }
-    }
-
-    Sequence_RenderEffectsEnd();
-  } else {
+  {
     // ============================================================
     //  Synced (live world) вЂ” playback-driven. The sequence PLAYS at a slow
     //  time scale, so the camera, world, shake and effect events all advance
@@ -705,7 +639,6 @@ void ProcessRenderToImages() {
   }
 
   // Restore.
-  g_RenderShakeTime = -1.0f; // back to live dt-driven shake
   GAMEPLAY::SET_TIME_SCALE(1.0f);
   g_FreezeEntities = prevFreezeEnt;
   g_HideHUD = prevHideHUD;

@@ -126,10 +126,6 @@ bool g_RememberCamPosition = false;
 bool g_FreezeWorld = false;     // Pause Game (SET_GAME_PAUSED)
 bool g_FreezeEntities = false;  // Freeze All Entities (camera stays live)
 float g_WorldTimeScale = 1.0f;
-// >= 0 while the offline renderer is running: shake is computed as a pure
-// function of this absolute time instead of the live dt accumulator, so it's
-// stable within a capture and advances exactly per frame / per sub-sample.
-float g_RenderShakeTime = -1.0f;
 bool g_ShowInfoOverlay = false;
 bool g_ShowLockedEntityMarker = true;
 
@@ -422,41 +418,6 @@ static void ComputeShakeOffsets(float dt, float &dx, float &dy, float &dz,
 
   float posMag = effectiveAmp * POS_SCALE * g_ShakePosWeight * s_ShakeMotionFactor;
   float rotMag = effectiveAmp * ROT_SCALE * g_ShakeRotWeight * s_ShakeMotionFactor;
-
-  dx = nx * posMag;
-  dy = ny * posMag;
-  dz = nz * posMag;
-  dPitch = np * rotMag;
-  dYaw = nyw * rotMag;
-  dRoll = nr * rotMag;
-}
-
-// Deterministic shake as a pure function of absolute time `t` (seconds). Used
-// by the offline renderer: no dt accumulator, no speed coupling, no motion
-// gate — so the same `t` always yields the same offset (stable across the
-// settle/flush/grab frames of one capture), while advancing `t` per output
-// frame gives correct-speed shake and advancing it per sub-sample makes the
-// shake motion-blur along with everything else.
-static void ComputeShakeOffsetsAtTime(float t, float &dx, float &dy, float &dz,
-                                      float &dPitch, float &dYaw, float &dRoll) {
-  dx = dy = dz = dPitch = dYaw = dRoll = 0.0f;
-  if (!g_ShakeEnabled || g_ShakeAmp <= 0.0001f)
-    return;
-
-  const float TWO_PI = 2.0f * PI;
-  float phase = g_ShakeFreq * TWO_PI * t; // base frequency, no speed coupling
-
-  float nx  = ShakeNoise1D(phase * s_ShakeAxisFreqMul[0], s_ShakeSeeds[0]);
-  float ny  = ShakeNoise1D(phase * s_ShakeAxisFreqMul[1], s_ShakeSeeds[1]);
-  float nz  = ShakeNoise1D(phase * s_ShakeAxisFreqMul[2], s_ShakeSeeds[2]);
-  float np  = ShakeNoise1D(phase * s_ShakeAxisFreqMul[3], s_ShakeSeeds[3]);
-  float nyw = ShakeNoise1D(phase * s_ShakeAxisFreqMul[4], s_ShakeSeeds[4]);
-  float nr  = ShakeNoise1D(phase * s_ShakeAxisFreqMul[5], s_ShakeSeeds[5]);
-
-  const float POS_SCALE = 0.05f;
-  const float ROT_SCALE = 1.0f;
-  float posMag = g_ShakeAmp * POS_SCALE * g_ShakePosWeight;
-  float rotMag = g_ShakeAmp * ROT_SCALE * g_ShakeRotWeight;
 
   dx = nx * posMag;
   dy = ny * posMag;
@@ -2029,13 +1990,7 @@ void SequencePushToEngine(float dt) {
   // shake works (speed = position derivative due to playback motion).
   float shakeDx = 0, shakeDy = 0, shakeDz = 0;
   float shakePitchD = 0, shakeYawD = 0, shakeRollD = 0;
-  if (g_RenderShakeTime >= 0.0f) {
-    // Offline render: deterministic, time-driven shake (stable per capture,
-    // advances per frame / sub-sample). dt is 0 here (scrub), so the live
-    // accumulator path below is intentionally skipped.
-    ComputeShakeOffsetsAtTime(g_RenderShakeTime, shakeDx, shakeDy, shakeDz,
-                              shakePitchD, shakeYawD, shakeRollD);
-  } else if (dt > 0.0f) {
+  if (dt > 0.0f) {
     ComputeShakeOffsets(dt, shakeDx, shakeDy, shakeDz, shakePitchD,
                         shakeYawD, shakeRollD);
     s_PrevPosX = s_PosX;

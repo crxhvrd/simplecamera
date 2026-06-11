@@ -317,6 +317,14 @@ public:
   bool IsOpen() const { return !stack_.empty(); }
   Menu *Current() const { return stack_.empty() ? nullptr : stack_.back(); }
 
+  // When enabled, Open() returns the cursor to the root row you left on (its
+  // last selected/scroll position) instead of resetting to the first item — so
+  // closing and reopening the menu remembers the last button you quit with. Off
+  // by default to preserve the plain "Open resets the cursor" behaviour for
+  // other hosts. The remembered row is validated each Open (falls back to the
+  // first selectable row if it's gone or no longer selectable).
+  void SetRememberRootCursor(bool on) { rememberRootCursor_ = on; }
+
   // Programmatic navigation helpers (rarely needed by hosts).
   void Push(Menu *m);
   void Back();
@@ -368,6 +376,7 @@ private:
   float widthOverridePx_ = -1.0f; // <0 => use theme width
 
   bool disableControls_ = true;
+  bool rememberRootCursor_ = false; // restore root cursor on Open (opt-in)
   std::string footerNote_;
 
   // inline value-edit state

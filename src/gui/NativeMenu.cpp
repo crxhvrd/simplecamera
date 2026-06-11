@@ -296,9 +296,20 @@ void MenuController::Open(Menu *root) {
     if (m->onPop) m->onPop();
   }
   if (root) {
-    root->scrollOffset = 0;
     stack_.push_back(root); // push first so firstSelectable() sees `root`
-    root->selected = root->items.empty() ? 0 : firstSelectable(0, +1);
+    // Restore the row we left on (remember mode) when it's still valid;
+    // otherwise start fresh at the first selectable row.
+    int n = (int)root->items.size();
+    bool restore = false;
+    if (rememberRootCursor_ && root->selected >= 0 && root->selected < n) {
+      const MenuItem &it = root->items[root->selected];
+      restore = it.enabled && it.type != ItemType::Label &&
+                it.type != ItemType::Separator;
+    }
+    if (!restore) {
+      root->scrollOffset = 0;
+      root->selected = root->items.empty() ? 0 : firstSelectable(0, +1);
+    }
     if (root->onPush) root->onPush();
   }
 }

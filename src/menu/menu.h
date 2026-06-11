@@ -37,14 +37,11 @@ void UpdateStatusText();
 
 // ---- Render-to-image settings (shared with the new framework render menu) ----
 extern float g_RenderFps;
-extern int g_RenderSettleFrames;
 extern int g_RenderFlushFrames;
 extern int g_RenderBlurSamples;
-extern float g_RenderShutter;
 extern int g_RenderFormat;
 extern int g_RenderJpegQuality;
 extern float g_RenderSlowmo;
-extern int g_RenderSyncWorld;
 extern float g_RenderHighlightBoost;
 
 // Run the deterministic offline render (blocks until the sequence is written or

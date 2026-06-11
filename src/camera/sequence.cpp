@@ -1238,41 +1238,6 @@ static void DriveEvents(const CameraSequence *s, float lastT, float nowT,
 }
 
 // ============================================================
-//  Offline render: effect-event evaluation
-// ============================================================
-//
-// The renderer scrubs the timeline (Sequence_SetCurrentTime), which applies
-// the pose but never fires effect events — so shake automation (and other
-// SHAKE_* events) wouldn't take effect in a render. These helpers let the
-// renderer evaluate the effect state at each output-frame time, exactly as
-// playback would, while snapshotting/restoring the user's live shake config
-// so authoring state isn't clobbered.
-
-static float s_RenderEvtLastT = -1.0f;
-static bool s_RenderEvtFirst = true;
-
-void Sequence_RenderEffectsBegin() {
-  SaveShakeSnapshot();
-  s_RenderEvtLastT = -1.0f;
-  s_RenderEvtFirst = true;
-}
-
-// Apply all effect events up to time `t` (incrementally from the previous
-// call's time), matching playback's DriveEvents semantics — so one-shots like
-// Randomize fire once and ramps interpolate correctly.
-void Sequence_RenderEffectsApply(float t) {
-  CameraSequence *s = Sequence_Active();
-  if (!s) return;
-  DriveEvents(s, s_RenderEvtLastT, t, s_RenderEvtFirst);
-  s_RenderEvtLastT = t;
-  s_RenderEvtFirst = false;
-}
-
-void Sequence_RenderEffectsEnd() {
-  RestoreShakeSnapshot();
-}
-
-// ============================================================
 //  Mode lifecycle + per-frame tick
 // ============================================================
 
