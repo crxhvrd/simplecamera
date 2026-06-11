@@ -475,49 +475,53 @@ static PoseKeyframe ResolvePose(const CameraSequence *s, int idx,
   if (p.entityHandle != 0 && ENTITY::DOES_ENTITY_EXIST(p.entityHandle)) {
     Vector3 entNowPos = ENTITY::GET_ENTITY_COORDS(p.entityHandle, TRUE);
 
-    // ---- Position ----
-    // Rigid Mode decides whether the keyframe ORBITS with the entity or just
-    // rides its translation:
-    //
-    //   Rigid ON  — full rigid attach. GET_OFFSET_FROM_ENTITY_IN_WORLD_COORDS
-    //               rotates the stored local offset by the entity's CURRENT
-    //               rotation, so the keyframe swings around the car as it
-    //               turns (bolted-on like a hood cam).
-    //
-    //   Rigid OFF — translate-only. Keep the world-space offset the keyframe
-    //               had at lock time and move it only by how far the entity
-    //               has TRANSLATED since: world_now = stored_world +
-    //               (entPos_now - entPos_at_lock). The keyframe follows the
-    //               car down the road but does NOT swing around it.
+    // Entity lock has two modes. The critical rule: ROTATION may only turn with
+    // the car when the POSITION also orbits it. Rotating the view without
+    // orbiting points the camera away from the car (the car drifts out of
+    // frame) — so rotation-with-car lives strictly inside the rigid branch.
     if (g_FollowRigidMode) {
+      // ---- Full rigid mount (orbit + rotate) ----
+      // Position: re-expand the stored local offset by the car's CURRENT
+      // rotation (GET_OFFSET_FROM_ENTITY_IN_WORLD_COORDS), so the camera swings
+      // around the car as it turns — bolted on like a hood cam.
       Vector3 w = invoke<Vector3>(0x1899F328B0E12848, p.entityHandle,
                                   p.localOffsetX, p.localOffsetY,
                                   p.localOffsetZ);
       p.posX = w.x;
       p.posY = w.y;
       p.posZ = w.z;
+
+      // Rotation: add the car's rotation CHANGE since lock to the authored
+      // angles. Paired with the orbit above, this keeps the car PRECISELY
+      // framed as it turns — the camera's view relative to the car is
+      // preserved. Camera and entity share GTA's world Euler convention
+      // (rotation order 2), so it's a plain delta, no quaternions.
+      // GET_ENTITY_ROTATION order-2: .x = pitch, .y = roll, .z = yaw.
+      Vector3 entNowRot = ENTITY::GET_ENTITY_ROTATION(p.entityHandle, 2);
+      float dPitch = entNowRot.x - p.lockEntPitch;
+      float dRoll  = entNowRot.y - p.lockEntRoll;
+      float dYaw   = entNowRot.z - p.lockEntYaw;
+      // Shortest-arc each delta so a 179 -> -179 wrap reads as +2, not -358.
+      while (dPitch > 180.0f) dPitch -= 360.0f;
+      while (dPitch <= -180.0f) dPitch += 360.0f;
+      while (dRoll > 180.0f) dRoll -= 360.0f;
+      while (dRoll <= -180.0f) dRoll += 360.0f;
+      while (dYaw > 180.0f) dYaw -= 360.0f;
+      while (dYaw <= -180.0f) dYaw += 360.0f;
+      p.pitch += dPitch;
+      p.roll  += dRoll;
+      p.yaw   += dYaw;
     } else {
+      // ---- Translate-only (move with the car, keep world rotation) ----
+      // The keyframe rides the car down the road by however far it has
+      // TRANSLATED since lock, but KEEPS its authored world pitch/yaw/roll. We
+      // deliberately do NOT rotate the view with the car: without an orbit,
+      // rotating would swing the camera off the car. "Keyframes only move with
+      // the entity." (A look-at "eyesight lock" that keeps the car framed from
+      // a fixed spot is a separate planned mode.)
       p.posX += entNowPos.x - p.lockEntPosX;
       p.posY += entNowPos.y - p.lockEntPosY;
       p.posZ += entNowPos.z - p.lockEntPosZ;
-    }
-
-    // ---- Rotation: aim AT the entity (look-at) ----
-    // The camera always points at the entity, no matter which way the car is
-    // facing. We do NOT add the car's heading change — that made the shot
-    // swing away as the car turned. Instead we recompute pitch/yaw from the
-    // keyframe's (resolved) world position toward the entity's current
-    // position. Yaw/pitch convention matches the free camera's forward vector
-    // (camera.cpp): forward = (-sin(yaw)cos(pitch), cos(yaw)cos(pitch),
-    // sin(pitch)). Roll is left as authored (look-at doesn't define roll).
-    float dx = entNowPos.x - p.posX;
-    float dy = entNowPos.y - p.posY;
-    float dz = entNowPos.z - p.posZ;
-    float horiz = sqrtf(dx * dx + dy * dy);
-    if (horiz > 0.0001f || fabsf(dz) > 0.0001f) {
-      const float RAD2DEG = 57.2957795f;
-      p.yaw = atan2f(-dx, dy) * RAD2DEG;
-      p.pitch = atan2f(dz, horiz) * RAD2DEG;
     }
   }
   return p;
@@ -897,10 +901,10 @@ void Sequence_CaptureLockForPose(PoseKeyframe &p) {
   p.localOffsetX = local.x;
   p.localOffsetY = local.y;
   p.localOffsetZ = local.z;
-  // Snapshot the entity's rotation at lock time so ResolvePose can derive
-  // the camera's orientation-relative-to-entity each frame. Stored as the
-  // ENTITY's native (pitch, roll, yaw) layout so the round-trip through
-  // EulerToSQuat -> SQuatToEuler stays consistent with EntityRotationQuat.
+  // Snapshot the entity's world rotation at lock time so ResolvePose can apply
+  // the car's rotation CHANGE since lock to the authored angles each frame
+  // (plain Euler delta — no quaternions). Stored in the entity's native
+  // (pitch, roll, yaw) layout, matching ResolvePose's read-back.
   Vector3 entRot = ENTITY::GET_ENTITY_ROTATION(target, 2);
   p.lockEntPitch = entRot.x;
   p.lockEntRoll  = entRot.y;

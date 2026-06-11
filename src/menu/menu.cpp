@@ -614,12 +614,20 @@ void ProcessRenderToImages() {
       // Accumulate `syncSamples` consecutive live frames. The world advances a
       // little between each (slowed playback), so the addon's linear average
       // becomes true full-scene motion blur. 1 = no blur.
-      for (int j = 0; j < syncSamples && !addonFail; ++j) {
+      //
+      // The banner is suppressed here (it would bake into the captured samples),
+      // so this is the long stretch where progress is invisible. Poll Backspace
+      // every sample so a high sample count can still be cancelled promptly.
+      for (int j = 0; j < syncSamples && !addonFail && !cancelled; ++j) {
         FxCapture_RequestSample(path, syncSamples, j);
         int guard = 0;
         while (!FxCapture_IsLastDone() && guard < 300) { stepDyn(false); ++guard; }
         if (guard >= 300) addonFail = true;
+        bool bBack;
+        GetMenuButtons(NULL, &bBack, NULL, NULL, NULL, NULL);
+        if (bBack) cancelled = true;
       }
+      if (cancelled) break;
 
       // AUTO: nudge the time scale so the per-frame work lands inside the
       // budget. Too much consumed -> slow down (world was overshooting); plenty
