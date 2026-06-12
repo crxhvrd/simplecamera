@@ -452,6 +452,10 @@ float g_RenderSlowmo = 0.0f;   // capture time scale. 0 = AUTO: pick a safe
                                       // the 1/fps budget (synced stays in sync).
                                       // >0 = fixed time scale.
 float g_RenderHighlightBoost = 0.3f; // 0..0.99 вЂ” highlight lift in blur accumulation
+int g_RenderChannelOrder = 0;  // captured channel order: 0 = Auto (addon
+                                      // detects the back-buffer format), 1 = RGBA,
+                                      // 2 = BGRA. Fixes red/blue-inverted output
+                                      // on swapchains the fixed order guessed wrong.
 
 // Centered progress banner. Only drawn on settle frames вЂ” never on the frame
 // the addon actually captures, so it can't bleed into the output.
@@ -526,6 +530,7 @@ void ProcessRenderToImages() {
 
   FxCapture_SetQuality(g_RenderJpegQuality);
   FxCapture_SetHighlightBoost(g_RenderHighlightBoost);
+  FxCapture_SetChannelOrder(g_RenderChannelOrder);
   const char *ext = (g_RenderFormat == 1) ? "jpg" : "png";
 
   bool cancelled = false;

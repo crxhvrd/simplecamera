@@ -424,6 +424,9 @@ files — ideal for assembling a clean, stutter-free clip in a video editor.
    - **Motion Blur** samples (up to **128**) and **Highlight Boost** for
      cinematic blur.
    - **Format** (PNG lossless or JPEG + quality) and optional **World Slow-mo**.
+   - **Color Channels** — leave on **Auto**. If rendered frames come out with
+     red/blue swapped (orange sky, blue road lines), force **RGBA** or **BGRA**
+     here; some setups (e.g. FiveM) use a different buffer format than vanilla.
 4. Choose **Start Render**. Frames are written to
    `SimpleCamera_Captures/render_NNNN/` next to the `.asi`.
 5. Import the image sequence into your editor at the same FPS.

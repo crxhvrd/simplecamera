@@ -20,7 +20,7 @@
 #pragma pack(push, 4)
 struct FxCaptureBlock {
   uint32_t magic;       // 'SCFX' (0x53434658) — set by the ASI once mapped
-  uint32_t version;     // 2
+  uint32_t version;     // 6
   uint32_t requestId;   // ASI increments to request a capture
   uint32_t ackId;       // addon echoes requestId once handled
   uint32_t status;      // 0 = ok, 1 = capture failed, 2 = file write failed
@@ -34,6 +34,10 @@ struct FxCaptureBlock {
   uint32_t addonHeartbeat; // addon bumps this every present; 0 = addon not loaded
   char outPath[512];       // ASI writes the full destination path; the addon
                            // picks PNG vs JPEG from the .png / .jpg extension
+  uint32_t channelOrder;   // 0 = Auto (addon detects the back-buffer format),
+                           // 1 = force RGBA (no swap), 2 = force BGRA (swap R/B).
+                           // Appended LAST so older ASI/addon pairings keep
+                           // every pre-existing field at the same offset.
 };
 #pragma pack(pop)
 
@@ -62,6 +66,11 @@ void FxCapture_SetQuality(int quality);
 // Set the highlight-boost amount (0..~1) applied during linear-light blur
 // accumulation. 0 = plain linear average; higher = brighter highlight streaks.
 void FxCapture_SetHighlightBoost(float boost);
+
+// Set the captured channel order: 0 = Auto (addon queries the back-buffer
+// format — correct on both vanilla GTA Enhanced [BGRA] and e.g. FiveM [RGBA]),
+// 1 = force RGBA, 2 = force BGRA. Sticky; fixes red/blue-inverted output.
+void FxCapture_SetChannelOrder(int order);
 
 // True once the shared channel is mapped (the ASI side always maps at startup).
 bool FxCapture_Available();

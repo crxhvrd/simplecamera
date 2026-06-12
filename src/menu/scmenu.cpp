@@ -812,6 +812,12 @@ static void RebuildSeqRender() {
       char b[8]; sprintf_s(b, "%d", g_RenderJpegQuality); return std::string(b);
     };
   }
+  g_SeqRender.AddList("Color Channels", &g_RenderChannelOrder,
+                      {"Auto", "RGBA", "BGRA"},
+                      [](int) { FxCapture_SetChannelOrder(g_RenderChannelOrder); },
+                      "Fix red/blue-inverted output (orange sky). Auto detects the "
+                      "game's buffer format; force RGBA or BGRA if colors come out "
+                      "wrong.");
   g_SeqRender.AddFloat("World Slow-mo", &g_RenderSlowmo, 0.0f, 1.0f, 0.01f, 2, nullptr,
                        "Time scale during capture. Auto (0) picks a safe value per frame.")
       .valueGetter = [] {

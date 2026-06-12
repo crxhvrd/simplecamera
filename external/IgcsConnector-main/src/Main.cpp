@@ -86,6 +86,9 @@ struct SC_FxCaptureBlock
 	float    highlightBoost; // 0..~1 — extra highlight lift in linear accumulation
 	uint32_t addonHeartbeat; // we bump this every present so the ASI knows we're loaded
 	char outPath[512];
+	uint32_t channelOrder;  // 0 = Auto (detect back-buffer format), 1 = force RGBA,
+	                        // 2 = force BGRA. Appended LAST so mismatched ASI/addon
+	                        // versions keep all earlier fields at the same offset.
 };
 #pragma pack(pop)
 
@@ -219,18 +222,60 @@ static void sc_fxCaptureTick(effect_runtime* runtime)
 
 	std::vector<uint8_t> shot(static_cast<size_t>(width) * height * 4);
 	runtime->capture_screenshot(shot.data());
-	// shot is BGRA on this backend (GTA Enhanced / DX12).
+
+	// capture_screenshot() returns raw back-buffer bytes, so the channel order
+	// follows the swapchain format: BGRA on vanilla GTA Enhanced (DX12), but
+	// RGBA on other setups (e.g. FiveM) — assuming one fixed order inverts
+	// red/blue on the other. Auto queries the actual format; the ASI can also
+	// force either order via channelOrder (1 = RGBA, 2 = BGRA).
+	bool swapRB;
+	const uint32_t orderMode = g_scFxBlock->channelOrder;
+	if (orderMode == 1)
+	{
+		swapRB = false;
+	}
+	else if (orderMode == 2)
+	{
+		swapRB = true;
+	}
+	else // Auto
+	{
+		swapRB = false;
+		device* const dev = runtime->get_device();
+		const resource backBuffer = runtime->get_current_back_buffer();
+		if (dev != nullptr && backBuffer.handle != 0)
+		{
+			switch (dev->get_resource_desc(backBuffer).texture.format)
+			{
+			case format::b8g8r8a8_typeless:
+			case format::b8g8r8a8_unorm:
+			case format::b8g8r8a8_unorm_srgb:
+			case format::b8g8r8x8_typeless:
+			case format::b8g8r8x8_unorm:
+			case format::b8g8r8x8_unorm_srgb:
+			case format::b10g10r10a2_typeless:
+			case format::b10g10r10a2_unorm:
+			case format::b10g10r10a2_uint:
+				swapRB = true;
+				break;
+			default:
+				break;
+			}
+		}
+	}
+	const uint32_t ri = swapRB ? 2u : 0u; // byte index of red within each pixel
+	const uint32_t bi = swapRB ? 0u : 2u; // byte index of blue
 
 	uint32_t status = 0;
 
 	if (sampleCount <= 1)
 	{
-		// Single capture: swap B<->R while packing down to tight RGB, then write.
+		// Single capture: pack down to tight RGB in the detected order, write.
 		for (uint32_t i = 0; i < width * height; ++i)
 		{
-			const uint8_t b = shot[4 * i + 0];
+			const uint8_t r = shot[4 * i + ri];
 			const uint8_t g = shot[4 * i + 1];
-			const uint8_t r = shot[4 * i + 2];
+			const uint8_t b = shot[4 * i + bi];
 			shot[3 * i + 0] = r;
 			shot[3 * i + 1] = g;
 			shot[3 * i + 2] = b;
@@ -255,9 +300,9 @@ static void sc_fxCaptureTick(effect_runtime* runtime)
 		}
 		for (uint32_t i = 0; i < width * height; ++i)
 		{
-			float r = g_scFxSrgb2Lin[shot[4 * i + 2]];
+			float r = g_scFxSrgb2Lin[shot[4 * i + ri]];
 			float g = g_scFxSrgb2Lin[shot[4 * i + 1]];
-			float bl = g_scFxSrgb2Lin[shot[4 * i + 0]];
+			float bl = g_scFxSrgb2Lin[shot[4 * i + bi]];
 			if (b > 0.0f)
 			{
 				r  = r  / (1.001f - b * r);

@@ -43,6 +43,7 @@ extern int g_RenderFormat;
 extern int g_RenderJpegQuality;
 extern float g_RenderSlowmo;
 extern float g_RenderHighlightBoost;
+extern int g_RenderChannelOrder;
 
 // Run the deterministic offline render (blocks until the sequence is written or
 // cancelled). Needs the ReShade + IgcsConnector capture addon.

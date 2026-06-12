@@ -51,7 +51,7 @@ void FxCapture_Init() {
   }
   // Stamp header regardless so the addon knows the ASI side is live.
   s_block->magic = kMagic;
-  s_block->version = 5;
+  s_block->version = 6;
   if (s_block->quality == 0)
     s_block->quality = 90; // sensible JPEG default
 }
@@ -70,6 +70,13 @@ void FxCapture_SetHighlightBoost(float boost) {
   if (boost < 0.0f) boost = 0.0f;
   if (boost > 0.99f) boost = 0.99f;
   s_block->highlightBoost = boost;
+}
+
+void FxCapture_SetChannelOrder(int order) {
+  if (!s_block)
+    return;
+  if (order < 0 || order > 2) order = 0;
+  s_block->channelOrder = (uint32_t)order;
 }
 
 bool FxCapture_RequestFrame(const char *fullPath) {
