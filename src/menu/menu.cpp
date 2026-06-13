@@ -357,10 +357,19 @@ void ResetSettingsToDefaults() {
 
 bool IsMenuTogglePressed() { return IsKeyJustUp(g_MenuKey); }
 
+// True when the player's most recent input came from a gamepad (not keyboard +
+// mouse). The frontend controls our pad combos read are ALSO bound to keyboard
+// keys (INPUT_FRONTEND_LB/RB 205/206 -> Q/E, CANCEL 202 -> Esc), so without
+// this gate those combos fire for keyboard users — pressing Q+E would open the
+// menu. _GET_LAST_INPUT_METHOD(2) is true for keyboard & mouse.
+static bool IsUsingGamepad() { return !CONTROLS::_GET_LAST_INPUT_METHOD(2); }
+
 // Controller has no F5, so LB + RB opens the menu. Edge-triggered (one bumper
 // held, the other just pressed) so holding both вЂ” or rolling with a single
 // bumper вЂ” doesn't retrigger every frame. 205 = INPUT_FRONTEND_LB, 206 = RB.
+// Gamepad-only: those controls double as keyboard Q/E (see IsUsingGamepad).
 bool IsControllerMenuCombo() {
+  if (!IsUsingGamepad()) return false;
   bool lb = PAD::IS_DISABLED_CONTROL_PRESSED(0, 205);
   bool rb = PAD::IS_DISABLED_CONTROL_PRESSED(0, 206);
   bool lbJust = PAD::IS_DISABLED_CONTROL_JUST_PRESSED(0, 205);
@@ -370,7 +379,9 @@ bool IsControllerMenuCombo() {
 
 // LB + B leaves Free Camera back to the mode picker without opening the menu.
 // Edge-triggered on B (202 = INPUT_FRONTEND_CANCEL) while LB is held.
+// Gamepad-only for the same reason (205/202 also map to keyboard Q/Esc).
 bool IsControllerExitCombo() {
+  if (!IsUsingGamepad()) return false;
   return PAD::IS_DISABLED_CONTROL_PRESSED(0, 205) &&
          PAD::IS_DISABLED_CONTROL_JUST_PRESSED(0, 202);
 }
