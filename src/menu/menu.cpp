@@ -525,6 +525,11 @@ void ProcessRenderToImages() {
   float prevTime = Sequence_CurrentTime();
   if (Sequence_IsPlaying()) Sequence_Stop();
 
+  // Take ownership of the time scale for the whole render so the World & Scene
+  // slow-motion control (UpdateGlobalEffects) doesn't fight the capture time
+  // scale. Cleared in the restore block, after which the slider re-asserts.
+  g_RenderActive = true;
+
   // Hide the keyframe markers / path preview вЂ” Sequence_FrameTick (used by the
   // synced path) redraws them every frame, so they'd be baked into the output.
   g_SequenceShowMarkers = false;
@@ -664,6 +669,7 @@ void ProcessRenderToImages() {
 
   // Restore.
   GAMEPLAY::SET_TIME_SCALE(1.0f);
+  g_RenderActive = false; // hand the time scale back to World & Scene slow-motion
   g_FreezeEntities = prevFreezeEnt;
   g_HideHUD = prevHideHUD;
   g_ShowInfoOverlay = prevOverlay;

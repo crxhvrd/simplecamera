@@ -373,7 +373,9 @@ static void BuildTree() {
   g_Time.AddToggle("Freeze All Entities", &g_FreezeEntities, nullptr,
                    "Freeze peds and vehicles in place while the camera stays live.");
   g_Time.AddFloat("Slow Motion", &g_WorldTimeScale, 0.01f, 1.0f, 0.01f, 2, nullptr,
-                  "World time scale for slow-motion. 1.00 = real time, lower = slower.");
+                  "World time scale for slow-motion. 1.00 = real time, lower = slower. "
+                  "Works in both Free Camera and Sequence modes; auto-suspended while "
+                  "an image-sequence render runs (which uses its own slow-mo).");
 
   // ---- Auto Drive ----
   g_AutoDrive.AddToggle("Enabled", &g_AutoDriveEnabled, [](bool on) {

@@ -111,6 +111,7 @@ extern bool g_RememberCamPosition;
 extern bool g_FreezeWorld;     // Pause Game (SET_GAME_PAUSED) — full halt
 extern bool g_FreezeEntities;  // Freeze All Entities — camera/audio stay live
 extern float g_WorldTimeScale; // slow-motion 0.01..1.0 (1.0 = real time)
+extern bool g_RenderActive;    // true while an image-sequence render owns time scale
 extern bool g_ShowInfoOverlay;
 extern bool g_ShowLockedEntityMarker;
 

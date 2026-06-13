@@ -126,6 +126,9 @@ bool g_RememberCamPosition = false;
 bool g_FreezeWorld = false;     // Pause Game (SET_GAME_PAUSED)
 bool g_FreezeEntities = false;  // Freeze All Entities (camera stays live)
 float g_WorldTimeScale = 1.0f;
+bool g_RenderActive = false;    // true while ProcessRenderToImages owns the time
+                                // scale; suspends World & Scene slow-motion so the
+                                // two don't fight over SET_TIME_SCALE.
 bool g_ShowInfoOverlay = false;
 bool g_ShowLockedEntityMarker = true;
 
@@ -1734,9 +1737,11 @@ void UpdateGlobalEffects() {
   //     in place but leaves time scale normal, so the camera, audio and
   //     particles keep running — a "frozen actors, live camera" freeze.
   //     Re-applied every frame to catch entities that stream in.
-  //   - Slow motion (g_WorldTimeScale): SET_TIME_SCALE(0.1..1.0), free camera
-  //     only and not in Sequence mode (sequences own the time scale via World
-  //     Speed effect events). Statics restore a 1.0 scale exactly once.
+  //   - Slow motion (g_WorldTimeScale): SET_TIME_SCALE(0.1..1.0). Works in both
+  //     Free Camera and Sequence mode (the only owner of time scale now — the
+  //     old per-sequence World Speed event was removed). Suspended while an
+  //     image-sequence render is running, since the render drives its own
+  //     capture time scale. Statics restore a 1.0 scale exactly once.
   static bool s_GamePaused = false;
   static bool s_EntitiesFrozen = false;
   static bool s_SlowMoApplied = false;
@@ -1761,7 +1766,10 @@ void UpdateGlobalEffects() {
   }
 
   // --- Slow motion ---
-  if (!g_FreezeWorld && g_FreeCamActive && g_CameraMode != 1 &&
+  // Applies in any active camera mode (Free Camera or Sequence). Skipped during
+  // a render so the renderer's capture time scale isn't overwritten; the render
+  // restores real-time itself, and this re-asserts the slider once it finishes.
+  if (!g_FreezeWorld && g_FreeCamActive && !g_RenderActive &&
       g_WorldTimeScale < 0.999f) {
     GAMEPLAY::SET_TIME_SCALE(g_WorldTimeScale);
     s_SlowMoApplied = true;

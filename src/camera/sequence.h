@@ -44,13 +44,14 @@ enum EffectKind {
   EFX_SHAKE_POS_WEIGHT = 7,    // position contribution (0..2)
   EFX_SHAKE_STOP_STILL = 8,    // stop-when-still toggle (0/1)
   EFX_SHAKE_RANDOMIZE = 9,     // fire = re-roll noise pattern (value ignored)
-  EFX_WORLD_SPEED = 10,        // MISC::SET_TIME_SCALE(value); clamped 0.1..1.0
   // Note: enum values are stable IDs. Sequences saved with earlier
   // builds that used 4..11 for DOF / time / weather / walk / world-freeze
   // kinds now collide with the new shake kinds — open those events in
   // the editor and either delete them or set them to the right kind.
-  // World Speed was added at the end (10) so existing saves keep working.
-  EFX_COUNT = 11,
+  // Kind 10 ("World Speed" / slow-motion) was REMOVED — slow motion now
+  // lives solely in the World & Scene menu (g_WorldTimeScale) so the two
+  // can't fight over SET_TIME_SCALE. Old saves with kind 10 load inert.
+  EFX_COUNT = 10,
 };
 
 const char *EaseName(EaseType e);

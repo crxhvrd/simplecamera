@@ -71,7 +71,6 @@ const char *EffectName(EffectKind k) {
   case EFX_SHAKE_POS_WEIGHT:  return "Position Weight";
   case EFX_SHAKE_STOP_STILL:  return "Stop When Still";
   case EFX_SHAKE_RANDOMIZE:   return "Randomize Pattern";
-  case EFX_WORLD_SPEED:       return "World Speed";
   default:                    return "(unsupported)";
   }
 }
@@ -111,14 +110,6 @@ struct ShakeSnapshot {
 static ShakeSnapshot s_PreplayShake;
 static bool s_HasShakeSnapshot = false;
 
-// Tracks whether the current playback session has fired at least one
-// World Speed event. If so, RestoreShakeSnapshot pushes the time scale
-// back to 1.0 on Stop / end-of-playback so the user's authoring state
-// isn't left in slow-motion. If no World Speed event fired, we don't
-// touch SET_TIME_SCALE at all — preserving any time scale the user (or
-// another script) may have set outside the sequence.
-static bool s_WorldSpeedTouched = false;
-
 static void SaveShakeSnapshot() {
   s_PreplayShake.enabled = g_ShakeEnabled;
   s_PreplayShake.preset = g_ShakePreset;
@@ -130,7 +121,6 @@ static void SaveShakeSnapshot() {
   s_PreplayShake.posW = g_ShakePosWeight;
   s_PreplayShake.stopStill = g_ShakeStopWhenStill;
   s_HasShakeSnapshot = true;
-  s_WorldSpeedTouched = false;
 }
 
 static void RestoreShakeSnapshot() {
@@ -145,13 +135,9 @@ static void RestoreShakeSnapshot() {
   g_ShakePosWeight = s_PreplayShake.posW;
   g_ShakeStopWhenStill = s_PreplayShake.stopStill;
   s_HasShakeSnapshot = false;
-  // If the session pushed any World Speed events, snap the time scale
-  // back to real-time. Otherwise leave SET_TIME_SCALE alone so we don't
-  // stomp on time-scale state owned by other scripts/mods.
-  if (s_WorldSpeedTouched) {
-    GAMEPLAY::SET_TIME_SCALE(1.0f);
-    s_WorldSpeedTouched = false;
-  }
+  // Time scale is no longer touched by sequence events — it's owned entirely
+  // by the World & Scene slow-motion control (UpdateGlobalEffects), which
+  // restores real-time on its own when the slider is back at 1.0.
 }
 
 void Sequence_SetEditingPose(int idx) { s_EditingPoseIdx = idx; }
@@ -1162,22 +1148,10 @@ static void ApplyEffectValue(EffectKind kind, float value) {
     // (sometimes desirable). For a single re-roll, use snap mode.
     RandomizeShakePattern();
     break;
-  case EFX_WORLD_SPEED: {
-    // Slow-motion / hyperlapse via GAMEPLAY::SET_TIME_SCALE. Clamp to
-    // [0.1, 1.0] — values above 1.0 cause physics instability and the
-    // game's animation system handles values below ~0.05 poorly.
-    // Ramp mode produces smooth speed transitions (e.g. ease into bullet
-    // time over 0.5s); snap mode flips instantly.
-    float v = value;
-    if (v < 0.1f) v = 0.1f;
-    if (v > 1.0f) v = 1.0f;
-    GAMEPLAY::SET_TIME_SCALE(v);
-    s_WorldSpeedTouched = true;
-    break;
-  }
   default:
-    // Removed kinds (DoF, time, weather, walk mode, world freeze) are
-    // silently ignored if they appear in an old saved sequence.
+    // Removed kinds (DoF, time, weather, walk mode, world freeze, world
+    // speed/slow-motion) are silently ignored if they appear in an old
+    // saved sequence. Slow motion now lives in the World & Scene menu.
     break;
   }
 }
@@ -1363,8 +1337,6 @@ static std::string FormatEventLabel(const EffectEvent &e) {
     sprintf_s(buf, "%sStopStill %s", p, e.value >= 0.5f ? "On" : "Off"); break;
   case EFX_SHAKE_RANDOMIZE:
     sprintf_s(buf, "%sRandomize!", p); break;
-  case EFX_WORLD_SPEED:
-    sprintf_s(buf, "%sSpeed:%.2fx", p, e.value); break;
   default: sprintf_s(buf, "%s(legacy)", p); break;
   }
   return buf;
@@ -1526,10 +1498,6 @@ static void DrawSequenceMarkers() {
       r = 255; g = 160; b = 80; break;
     case EFX_SHAKE_RANDOMIZE:
       r = 255; g = 80;  b = 220; break;
-    case EFX_WORLD_SPEED:
-      // Cool icy blue — visually reads as "time / slow-mo" and stays
-      // distinct from the warm-orange shake family and magenta randomize.
-      r = 100; g = 200; b = 255; break;
     default:
       r = 140; g = 140; b = 140; break;
     }
