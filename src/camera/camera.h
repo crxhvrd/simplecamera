@@ -108,6 +108,10 @@ extern bool g_HideHUD;
 extern bool g_DisableVehicleShake;
 extern bool g_HidePlayer;
 extern bool g_RememberCamPosition;
+// When on, the (frozen, hidden) player ped is teleported to the camera each
+// frame so the world streams/LODs around the shot instead of the player's real
+// position — fixes LOD pop on far-away clips/keyframes. Restored on exit.
+extern bool g_StreamAroundCamera;
 extern bool g_FreezeWorld;     // Pause Game (SET_GAME_PAUSED) — full halt
 extern bool g_FreezeEntities;  // Freeze All Entities — camera/audio stay live
 extern float g_WorldTimeScale; // slow-motion 0.01..1.0 (1.0 = real time)
@@ -167,6 +171,15 @@ void DetectFiveM();
 void InitFreeCamera();
 void DestroyFreeCamera();
 void UpdateFreeCamera();
+
+// Temporarily hand the gameplay camera + control back to the player (e.g. to
+// drive a car for a vehicle-clip recording) without tearing down the free
+// camera: the scripted cam is deactivated and the ped released, but all free-cam
+// state (position, FOV, ...) is preserved so Resume restores the exact shot.
+// Both are no-ops if the free camera isn't active / wasn't suspended.
+void FreeCam_SuspendForDrive();
+void FreeCam_ResumeAfterDrive();
+bool FreeCam_IsSuspended();
 
 // Quick camera actions (Misc menu)
 void SnapCameraToPlayer();

@@ -15,6 +15,8 @@
     <ClCompile Include="src\core\main.cpp" />
     <ClCompile Include="src\capture\igcs_bridge.cpp" />
     <ClCompile Include="src\camera\sequence.cpp" />
+    <ClCompile Include="src\camera\vehicleclip.cpp" />
+    <ClCompile Include="src\camera\vehmem.cpp" />
     <ClCompile Include="src\capture\fx_capture.cpp" />
     <ClCompile Include="src\gui\MenuDraw.cpp" />
     <ClCompile Include="src\gui\NativeMenu.cpp" />
@@ -36,6 +38,8 @@
     <ClInclude Include="src\core\script.h" />
     <ClInclude Include="src\capture\igcs_bridge.h" />
     <ClInclude Include="src\camera\sequence.h" />
+    <ClInclude Include="src\camera\vehicleclip.h" />
+    <ClInclude Include="src\camera\vehmem.h" />
     <ClInclude Include="src\capture\fx_capture.h" />
   </ItemGroup>
   <ItemGroup>

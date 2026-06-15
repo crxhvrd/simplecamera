@@ -7,6 +7,7 @@
 
 #include "camera.h"
 #include "keyboard.h"
+#include "vehicleclip.h"
 
 #include "external\scripthook_sdk\inc\main.h"
 #include "external\scripthook_sdk\inc\natives.h"
@@ -164,6 +165,12 @@ static void ApplyPoseAtTime(float t, const CameraSequence *s);
 // Forward decl — defined alongside event firing, used by Sequence_Play
 // for catch-up when starting playback mid-sequence.
 static void ApplyEffectValue(EffectKind kind, float value);
+
+// Forward decls — defined in the persistence section. Each sequence is a single
+// merged JSON file (keyframes + events + settings + its vehicle clips).
+static void SaveSequenceJson(int idx);
+static void LoadActiveSequenceClips();
+static void GetSeqJsonPath(const char *seqName, char *outPath, size_t bufSize);
 
 // ============================================================
 //  Easing
@@ -549,24 +556,39 @@ CameraSequence *Sequence_At(int index) {
 
 void Sequence_SetActive(int index) {
   if (index >= 0 && index < (int)s_Sequences.size()) {
+    if (index == s_ActiveIdx) { Sequence_Stop(); return; }
+    // Persist the outgoing sequence (keyframes + its clips) to its JSON, then
+    // swap in the new one and load its clips.
+    SaveSequenceJson(s_ActiveIdx);
+    VehicleClip_DespawnGhost();
     s_ActiveIdx = index;
     Sequence_Stop();
+    LoadActiveSequenceClips();
   }
 }
 
 void Sequence_New(const char *name) {
+  // Persist the current sequence (incl. its clips) before switching away.
+  SaveSequenceJson(s_ActiveIdx);
+  VehicleClip_DespawnGhost();
   CameraSequence s;
   s.name = (name && *name) ? name : "Untitled";
   s.loop = false;
   s.playbackSpeed = 1.0f;
   s_Sequences.push_back(s);
   s_ActiveIdx = (int)s_Sequences.size() - 1;
+  VehicleClip_Clear(); // a brand-new sequence starts with no vehicle clips
   Sequence_Stop();
 }
 
 void Sequence_DeleteActive() {
   if (s_ActiveIdx < 0 || s_ActiveIdx >= (int)s_Sequences.size())
     return;
+  // Remove the sequence's JSON file from disk too.
+  char path[MAX_PATH];
+  GetSeqJsonPath(s_Sequences[s_ActiveIdx].name.c_str(), path, sizeof(path));
+  DeleteFileA(path);
+  VehicleClip_DespawnGhost();
   s_Sequences.erase(s_Sequences.begin() + s_ActiveIdx);
   if (s_Sequences.empty()) {
     s_ActiveIdx = -1;
@@ -575,6 +597,7 @@ void Sequence_DeleteActive() {
     s_ActiveIdx = (int)s_Sequences.size() - 1;
   }
   Sequence_Stop();
+  LoadActiveSequenceClips();
 }
 
 void Sequence_SortByTime() {
@@ -683,6 +706,11 @@ float Sequence_TotalDuration() {
   float maxT = 0.0f;
   for (const auto &p : s->poses) if (p.t > maxT) maxT = p.t;
   for (const auto &e : s->events) if (e.t > maxT) maxT = e.t;
+  // Extend the timeline to cover the vehicle clips too (a delayed / slowed car
+  // reaches past the last keyframe — its per-clip offset+speed are folded in by
+  // VehicleClip_Duration), so the scrub/playback can reach the whole action.
+  float vd = VehicleClip_Duration();
+  if (vd > maxT) maxT = vd;
   return maxT;
 }
 
@@ -909,15 +937,29 @@ int Sequence_CapturePoseAtCurrentTime() {
   GetCameraState(px, py, pz, pitch, yaw, roll);
 
   PoseKeyframe k{};
-  k.t = s_PlaybackTime;
-  // If there's already a pose with this t, nudge so we don't create
-  // coincident keyframes (zero-length segment + identical display).
-  // 0.05s is enough that %.2f rendering shows distinct values.
+  // Current timeline end (last keyframe's time).
+  float lastT = 0.0f;
+  bool hasPoses = !s->poses.empty();
+  for (const auto &p : s->poses) if (p.t > lastT) lastT = p.t;
+
+  // Append vs insert. If the playhead is at/after the end, this is an ENDING
+  // keyframe: place it a fixed 2s after the last one so the timeline grows by 2s
+  // (and the playhead then sits exactly on the new end — valid, so it can't be
+  // clamped back to the old duration the way a "+2 past the end" advance was).
+  // Otherwise it's an INSERT between existing keyframes: place it at the playhead
+  // and add no time.
+  bool isAppend = !hasPoses || s_PlaybackTime >= lastT - 0.01f;
+  if (isAppend && hasPoses)
+    k.t = lastT + 2.0f;
+  else
+    k.t = s_PlaybackTime;
+
+  // Nudge off any coincident keyframe so we don't create a zero-length segment.
+  // (An append lands past every existing time, so this only matters for inserts.)
   for (const auto &existing : s->poses) {
-    if (fabsf(existing.t - k.t) < 0.05f) {
-      k.t = existing.t + 0.05f;
-    }
+    if (fabsf(existing.t - k.t) < 0.05f) k.t = existing.t + 0.05f;
   }
+
   k.posX = px; k.posY = py; k.posZ = pz;
   k.pitch = pitch; k.yaw = yaw; k.roll = roll;
   k.fov = g_CamFOV;
@@ -934,11 +976,12 @@ int Sequence_CapturePoseAtCurrentTime() {
   s->poses.push_back(k);
   Sequence_SortByTime();
 
-  // Auto-advance scrub by 2s past the new pose. The next capture (whether
-  // from the menu button or the F6 hotkey) naturally lands 2s later, so
-  // "fly → F6 → fly → F6" builds an evenly-spaced sequence. Done here
-  // (not at the call sites) so both paths behave identically.
-  s_PlaybackTime = k.t + 2.0f;
+  // Move the playhead onto the new keyframe. For an append that's the new end
+  // (its time is already 2s past the previous last, so the scrub shows the
+  // advance and the timeline grew by 2s); for an insert it stays on the inserted
+  // pose. Either way it lands exactly on a real keyframe, so it's a valid scrub
+  // position that won't be clamped back.
+  s_PlaybackTime = k.t;
   s_LastTickTime = s_PlaybackTime;
 
   // Find the new pose's index after sorting
@@ -953,6 +996,11 @@ int Sequence_CapturePoseAtCurrentTime() {
 
 static void ApplyPoseAtTime(float t, const CameraSequence *s) {
   if (!s || s->poses.empty()) return;
+
+  // Position the recorded vehicle (if any) at this timeline instant FIRST, so
+  // entity-locked keyframes below resolve against the subject's correct pose.
+  // animateWheels while playing/rendering; held still on a plain scrub.
+  VehicleClip_ApplyAtTime(t, s_Playing);
 
   // Single pose: just hold it
   if (s->poses.size() == 1) {
@@ -1247,6 +1295,8 @@ void Sequence_ExitMode() {
   if (!s_InMode) return;
   Sequence_Stop();
   s_InMode = false;
+  VehicleClip_DespawnGhost(); // remove a respawned ghost when leaving the mode
+  VehicleClip_Release();      // hand any real recorded vehicle back to the game
   if (g_FreeCamActive) {
     DestroyFreeCamera();
   }
@@ -1344,6 +1394,9 @@ static std::string FormatEventLabel(const EffectEvent &e) {
 
 static void DrawSequenceMarkers() {
   if (!g_SequenceShowMarkers) return;
+  // Recorded-vehicle path first — it's independent of the camera keyframes, so
+  // it shows even before any pose has been captured (record car, then author).
+  VehicleClip_DrawPath(s_PlaybackTime, s_Playing);
   CameraSequence *s = Sequence_Active();
   if (!s || s->poses.empty()) return;
 
@@ -1417,10 +1470,10 @@ static void DrawSequenceMarkers() {
     // Label above the marker. Seam pose gets the "Loop" tag so the user
     // can see at a glance which sequences are closed. Locked poses get a
     // small chain glyph so locks are visible at a glance in the world.
-    char poseLabel[32];
+    char poseLabel[48];
     const char *lockTag = isLockedLive ? " [L]" : "";
-    if (isSeam) sprintf_s(poseLabel, "KF 0 / Loop%s", lockTag);
-    else        sprintf_s(poseLabel, "KF %d%s", i, lockTag);
+    if (isSeam) sprintf_s(poseLabel, "KF 0 / Loop%s  %.1fs", lockTag, p.t);
+    else        sprintf_s(poseLabel, "KF %d%s  %.1fs", i, lockTag, p.t);
     int la = s_Playing ? 140 : 230;
     DrawText3D(p.posX, p.posY, p.posZ + 0.5f, poseLabel, r, g, b, la, 0.32f);
   }
@@ -1466,6 +1519,30 @@ static void DrawSequenceMarkers() {
     } else {
       GRAPHICS::DRAW_LINE(a.posX, a.posY, a.posZ, b.posX, b.posY, b.posZ,
                           lineR, lineG, lineB, alpha);
+    }
+  }
+
+  // Per-second timestamp ticks along the camera path (mirrors the vehicle path).
+  // Auto-spaced to ~20 labels max; skipped where a keyframe already shows its
+  // own time so the two don't overlap.
+  {
+    float dur = s->poses[N - 1].t;
+    int tsStep = 1;
+    while (dur / (float)tsStep > 20.0f) ++tsStep;
+    int ta = s_Playing ? 110 : 180;
+    for (int sec = tsStep; (float)sec < dur; sec += tsStep) {
+      bool nearKf = false;
+      for (int i = 0; i < N; ++i)
+        if (fabsf(s->poses[i].t - (float)sec) < 0.2f) { nearKf = true; break; }
+      if (nearKf) continue;
+      float x, y, z;
+      ComputePosAtTime((float)sec, s, x, y, z);
+      char buf[16];
+      sprintf_s(buf, "%ds", sec);
+      DrawText3D(x, y, z + 0.15f, buf, g_SeqPathR, g_SeqPathG, g_SeqPathB, ta,
+                 0.24f);
+      GRAPHICS::DRAW_LINE(x, y, z, x, y, z + 0.12f, g_SeqPathR, g_SeqPathG,
+                          g_SeqPathB, ta);
     }
   }
 
@@ -1519,6 +1596,11 @@ void Sequence_FrameTick() {
   float dt = GAMEPLAY::GET_FRAME_TIME();
   if (dt <= 0.0f || dt > 0.1f) dt = 0.016f;
 
+  // Bring a loaded clip's ghost vehicle into the world (polls model streaming;
+  // cheap no-op once spawned / when there's no pending clip). Done here so it
+  // happens even while idle, not only during scrub/playback.
+  VehicleClip_EnsureGhost();
+
   static bool s_PrevTickPlaying = false;
   Sequence_Tick(dt);
 
@@ -1533,6 +1615,11 @@ void Sequence_FrameTick() {
     SequenceDetachCamera();
   }
   s_PrevTickPlaying = s_Playing;
+
+  // Hold the recorded vehicle on its current scrub pose while authoring (not
+  // playing), so it stays put where the playhead is as you fly around to frame
+  // a keyframe. Velocity off — it's parked, not driving.
+  if (!s_Playing) VehicleClip_ApplyAtTime(s_PlaybackTime, false);
 
   // Free-fly authoring: when playback is OFF, let the user fly the camera
   // around with WASD/etc. to compose the next keyframe. UpdateFreeCamera
@@ -1608,6 +1695,57 @@ static void GetSequencesIniPath(char *outPath, size_t bufSize) {
              "SimpleCamera_Sequences.ini");
 }
 
+// Path to a sequence's vehicle-clip JSON sidecar:
+//   <plugin dir>\SimpleCamera_Clips\<sanitized name>.json
+// The clip is stored per-sequence (named after it) so loading a sequence brings
+// back its recorded vehicle. Creates the Clips directory on demand.
+static void GetClipPath(const char *seqName, char *outPath, size_t bufSize) {
+  char base[MAX_PATH];
+  GetSequencesIniPath(base, sizeof(base)); // ...\SimpleCamera_Sequences.ini
+  char *last = strrchr(base, '\\');
+  if (last) *(last + 1) = '\0'; // -> "...\" (plugin dir)
+  char dir[MAX_PATH];
+  sprintf_s(dir, "%sSimpleCamera_Clips", base);
+  CreateDirectoryA(dir, NULL);
+  char safe[128];
+  size_t n = 0;
+  for (const char *p = seqName; *p && n < sizeof(safe) - 1; ++p) {
+    char c = *p;
+    bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') || c == '-' || c == '_' || c == ' ';
+    safe[n++] = ok ? c : '_';
+  }
+  safe[n] = '\0';
+  sprintf_s(outPath, bufSize, "%s\\%s.json", dir, safe);
+}
+
+// Directory holding the per-sequence merged JSON files, i.e.
+// "<plugin dir>\SimpleCamera_Sequences".
+static void GetSeqDir(char *outDir, size_t bufSize) {
+  char base[MAX_PATH];
+  GetSequencesIniPath(base, sizeof(base)); // ...\SimpleCamera_Sequences.ini
+  char *last = strrchr(base, '\\');
+  if (last) *(last + 1) = '\0'; // -> plugin dir
+  sprintf_s(outDir, bufSize, "%sSimpleCamera_Sequences", base);
+  CreateDirectoryA(outDir, NULL);
+}
+
+// Path to a sequence's merged JSON: <seq dir>\<sanitized name>.json
+static void GetSeqJsonPath(const char *seqName, char *outPath, size_t bufSize) {
+  char dir[MAX_PATH];
+  GetSeqDir(dir, sizeof(dir));
+  char safe[128];
+  size_t n = 0;
+  for (const char *p = seqName; *p && n < sizeof(safe) - 1; ++p) {
+    char c = *p;
+    bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') || c == '-' || c == '_' || c == ' ';
+    safe[n++] = ok ? c : '_';
+  }
+  safe[n] = '\0';
+  sprintf_s(outPath, bufSize, "%s\\%s.json", dir, safe);
+}
+
 static void ParsePose(const char *line, PoseKeyframe &p) {
   // Format: t=X,x=X,y=X,z=X,pitch=X,yaw=X,roll=X,fov=X,ease=N,path=N
   //         [,locked=1,locX=F,locY=F,locZ=F]    (entity lock fields, optional)
@@ -1681,46 +1819,13 @@ static void ParseEvent(const char *line, EffectEvent &e) {
   }
 }
 
-static void FormatPose(const PoseKeyframe &p, char *out, size_t bufSize) {
-  int n = sprintf_s(out, bufSize,
-            "t=%.3f,x=%.3f,y=%.3f,z=%.3f,pitch=%.3f,yaw=%.3f,roll=%.3f,fov=%.3f,ease=%d,path=%d",
-            p.t, p.posX, p.posY, p.posZ, p.pitch, p.yaw, p.roll, p.fov,
-            (int)p.ease, (int)p.path);
-  // Only append the lock fields when the keyframe is currently locked.
-  // Keeps older sequences round-trip-identical and avoids cluttering
-  // saved sequences that never used entity lock. See ParsePose for the
-  // load-side handling of these fields.
-  if (n > 0 && p.entityHandle != 0) {
-    sprintf_s(out + n, bufSize - n,
-              ",locked=1,locX=%.3f,locY=%.3f,locZ=%.3f"
-              ",lEntP=%.3f,lEntY=%.3f,lEntR=%.3f"
-              ",lEpX=%.3f,lEpY=%.3f,lEpZ=%.3f",
-              p.localOffsetX, p.localOffsetY, p.localOffsetZ,
-              p.lockEntPitch, p.lockEntYaw, p.lockEntRoll,
-              p.lockEntPosX, p.lockEntPosY, p.lockEntPosZ);
-  }
-}
-
-static void FormatEvent(const EffectEvent &e, char *out, size_t bufSize) {
-  sprintf_s(out, bufSize, "t=%.3f,kind=%d,value=%.4f,ramp=%d", e.t,
-            (int)e.kind, e.value, e.ramp ? 1 : 0);
-}
-
-void Sequence_LoadAll() {
+// ---- Legacy INI loader (kept only to migrate old saves to JSON) ----
+static void LoadAllLegacyIni() {
   char path[MAX_PATH];
   GetSequencesIniPath(path, sizeof(path));
-
-  s_Sequences.clear();
-  s_ActiveIdx = -1;
-
-  // Enumerate section names by reading the whole INI's names buffer
   char names[8192] = {0};
   DWORD got = GetPrivateProfileSectionNamesA(names, sizeof(names), path);
-  if (got == 0) {
-    EnsureActive();
-    return;
-  }
-
+  if (got == 0) return;
   for (const char *p = names; *p; p += strlen(p) + 1) {
     if (strncmp(p, "Sequence:", 9) != 0) continue;
     CameraSequence seq;
@@ -1729,15 +1834,13 @@ void Sequence_LoadAll() {
     char speedBuf[32];
     GetPrivateProfileStringA(p, "Speed", "1.0", speedBuf, sizeof(speedBuf), path);
     seq.playbackSpeed = (float)atof(speedBuf);
-
     int poseCount = GetPrivateProfileIntA(p, "PoseCount", 0, path);
     for (int i = 0; i < poseCount; ++i) {
       char key[32]; sprintf_s(key, "Pose%d", i);
       char buf[512];
       GetPrivateProfileStringA(p, key, "", buf, sizeof(buf), path);
       if (!*buf) continue;
-      PoseKeyframe pk;
-      ParsePose(buf, pk);
+      PoseKeyframe pk; ParsePose(buf, pk);
       seq.poses.push_back(pk);
     }
     int eventCount = GetPrivateProfileIntA(p, "EventCount", 0, path);
@@ -1746,52 +1849,256 @@ void Sequence_LoadAll() {
       char buf[256];
       GetPrivateProfileStringA(p, key, "", buf, sizeof(buf), path);
       if (!*buf) continue;
-      EffectEvent ev;
-      ParseEvent(buf, ev);
+      EffectEvent ev; ParseEvent(buf, ev);
       seq.events.push_back(ev);
     }
     s_Sequences.push_back(seq);
   }
+  if (!s_Sequences.empty()) s_ActiveIdx = 0;
+}
 
-  if (s_Sequences.empty()) EnsureActive();
-  else s_ActiveIdx = 0;
+// ---- Minimal JSON scanning helpers (sequence side) ----
+static const char *SqWs(const char *p) {
+  while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
+  return p;
+}
+static const char *SqAfterKey(const char *base, const char *end, const char *key) {
+  char pat[40];
+  sprintf_s(pat, "\"%s\"", key);
+  size_t plen = strlen(pat);
+  for (const char *p = base; p + plen <= end; ++p) {
+    if (strncmp(p, pat, plen) == 0) {
+      p = SqWs(p + plen);
+      if (*p == ':') return SqWs(p + 1);
+      return SqWs(p);
+    }
+  }
+  return nullptr;
+}
+static void SqWriteStr(FILE *f, const char *s) { // JSON-escape quotes/backslash
+  for (; *s; ++s) {
+    if (*s == '"' || *s == '\\') fputc('\\', f);
+    fputc(*s, f);
+  }
+}
+
+static void WritePoseJson(FILE *f, const PoseKeyframe &p, bool last) {
+  fprintf(f,
+          "    {\"t\":%.3f,\"x\":%.3f,\"y\":%.3f,\"z\":%.3f,\"pitch\":%.3f,"
+          "\"yaw\":%.3f,\"roll\":%.3f,\"fov\":%.3f,\"ease\":%d,\"path\":%d,"
+          "\"locked\":%d,\"locX\":%.3f,\"locY\":%.3f,\"locZ\":%.3f,"
+          "\"lEntP\":%.3f,\"lEntY\":%.3f,\"lEntR\":%.3f,"
+          "\"lEpX\":%.3f,\"lEpY\":%.3f,\"lEpZ\":%.3f}%s\n",
+          p.t, p.posX, p.posY, p.posZ, p.pitch, p.yaw, p.roll, p.fov,
+          (int)p.ease, (int)p.path, p.entityHandle != 0 ? 1 : 0, p.localOffsetX,
+          p.localOffsetY, p.localOffsetZ, p.lockEntPitch, p.lockEntYaw,
+          p.lockEntRoll, p.lockEntPosX, p.lockEntPosY, p.lockEntPosZ,
+          last ? "" : ",");
+}
+
+static void WriteEventJson(FILE *f, const EffectEvent &e, bool last) {
+  fprintf(f, "    {\"t\":%.3f,\"kind\":%d,\"value\":%.4f,\"ramp\":%d}%s\n", e.t,
+          (int)e.kind, e.value, e.ramp ? 1 : 0, last ? "" : ",");
+}
+
+static void ParsePoseJson(const char *start, const char *end, PoseKeyframe &p) {
+  p = PoseKeyframe{};
+  p.ease = EASE_LINEAR;
+  p.path = PATH_LINEAR;
+  const char *k;
+  if ((k = SqAfterKey(start, end, "t")))     p.t = (float)atof(k);
+  if ((k = SqAfterKey(start, end, "x")))     p.posX = (float)atof(k);
+  if ((k = SqAfterKey(start, end, "y")))     p.posY = (float)atof(k);
+  if ((k = SqAfterKey(start, end, "z")))     p.posZ = (float)atof(k);
+  if ((k = SqAfterKey(start, end, "pitch"))) p.pitch = (float)atof(k);
+  if ((k = SqAfterKey(start, end, "yaw")))   p.yaw = (float)atof(k);
+  if ((k = SqAfterKey(start, end, "roll")))  p.roll = (float)atof(k);
+  if ((k = SqAfterKey(start, end, "fov")))   p.fov = (float)atof(k);
+  if ((k = SqAfterKey(start, end, "ease")))  p.ease = (EaseType)atoi(k);
+  if ((k = SqAfterKey(start, end, "path")))  p.path = (PathType)atoi(k);
+  if ((k = SqAfterKey(start, end, "locX")))  p.localOffsetX = (float)atof(k);
+  if ((k = SqAfterKey(start, end, "locY")))  p.localOffsetY = (float)atof(k);
+  if ((k = SqAfterKey(start, end, "locZ")))  p.localOffsetZ = (float)atof(k);
+  if ((k = SqAfterKey(start, end, "lEntP"))) p.lockEntPitch = (float)atof(k);
+  if ((k = SqAfterKey(start, end, "lEntY"))) p.lockEntYaw = (float)atof(k);
+  if ((k = SqAfterKey(start, end, "lEntR"))) p.lockEntRoll = (float)atof(k);
+  if ((k = SqAfterKey(start, end, "lEpX")))  p.lockEntPosX = (float)atof(k);
+  if ((k = SqAfterKey(start, end, "lEpY")))  p.lockEntPosY = (float)atof(k);
+  if ((k = SqAfterKey(start, end, "lEpZ")))  p.lockEntPosZ = (float)atof(k);
+  p.entityHandle = 0; // handles are session-scoped — never restored
+}
+
+static void ParseEventJson(const char *start, const char *end, EffectEvent &e) {
+  e = EffectEvent{};
+  const char *k;
+  if ((k = SqAfterKey(start, end, "t")))     e.t = (float)atof(k);
+  if ((k = SqAfterKey(start, end, "kind")))  e.kind = (EffectKind)atoi(k);
+  if ((k = SqAfterKey(start, end, "value"))) e.value = (float)atof(k);
+  if ((k = SqAfterKey(start, end, "ramp")))  e.ramp = atoi(k) != 0;
+}
+
+// Iterate the flat {...} objects of a named array within [data,end), invoking
+// `fn(objStart, objEnd)` for each. Objects must contain no nested braces (poses
+// and events are flat scalars), so a plain '}' scan terminates each.
+template <typename F>
+static void ForEachArrayObject(const char *data, const char *end,
+                               const char *arrayKey, F fn) {
+  const char *ak = SqAfterKey(data, end, arrayKey);
+  if (!ak) return;
+  const char *p = strchr(ak, '[');
+  if (!p || p >= end) return;
+  ++p;
+  while (p < end) {
+    p = SqWs(p);
+    if (*p == ']' || *p == 0) break;
+    if (*p != '{') { ++p; continue; }
+    const char *objEnd = strchr(p, '}');
+    if (!objEnd || objEnd >= end) break;
+    fn(p, objEnd);
+    p = objEnd + 1;
+  }
+}
+
+static void ParseSequenceJson(const char *data, int len, CameraSequence &seq) {
+  const char *end = data + len;
+  seq.playbackSpeed = 1.0f;
+  const char *k = SqAfterKey(data, end, "name");
+  if (k) {
+    k = SqWs(k);
+    if (*k == '"') {
+      ++k;
+      std::string nm;
+      while (*k && *k != '"') {
+        if (*k == '\\' && k[1]) ++k;
+        nm.push_back(*k++);
+      }
+      seq.name = nm;
+    }
+  }
+  if (seq.name.empty()) seq.name = "Untitled";
+  if ((k = SqAfterKey(data, end, "loop"))) seq.loop = atoi(k) != 0;
+  if ((k = SqAfterKey(data, end, "playbackSpeed")))
+    seq.playbackSpeed = (float)atof(k);
+  ForEachArrayObject(data, end, "poses", [&](const char *a, const char *b) {
+    PoseKeyframe pk; ParsePoseJson(a, b, pk); seq.poses.push_back(pk);
+  });
+  ForEachArrayObject(data, end, "events", [&](const char *a, const char *b) {
+    EffectEvent ev; ParseEventJson(a, b, ev); seq.events.push_back(ev);
+  });
+}
+
+// Write sequence `idx` as a merged JSON file. The clip section uses the runtime
+// (singleton) clips, so the caller must ensure those belong to `idx` — true for
+// the active sequence and during migration.
+static void SaveSequenceJson(int idx) {
+  if (idx < 0 || idx >= (int)s_Sequences.size()) return;
+  const CameraSequence &s = s_Sequences[idx];
+  char path[MAX_PATH];
+  GetSeqJsonPath(s.name.c_str(), path, sizeof(path));
+  FILE *f = nullptr;
+  if (fopen_s(&f, path, "wb") != 0 || !f) return;
+  fprintf(f, "{\n  \"version\": 1,\n  \"name\": \"");
+  SqWriteStr(f, s.name.c_str());
+  fprintf(f, "\",\n  \"loop\": %d,\n  \"playbackSpeed\": %.4f,\n", s.loop ? 1 : 0,
+          s.playbackSpeed);
+  fprintf(f, "  \"poses\": [\n");
+  for (int i = 0; i < (int)s.poses.size(); ++i)
+    WritePoseJson(f, s.poses[i], i + 1 == (int)s.poses.size());
+  fprintf(f, "  ],\n  \"events\": [\n");
+  for (int i = 0; i < (int)s.events.size(); ++i)
+    WriteEventJson(f, s.events[i], i + 1 == (int)s.events.size());
+  fprintf(f, "  ],\n");
+  VehicleClip_WriteClipsJson(f); // "sampleHz" + "clips":[...] (runtime clips)
+  fprintf(f, "}\n");
+  fclose(f);
+}
+
+// Load the active sequence's embedded clips into the runtime clip module.
+static void LoadActiveSequenceClips() {
+  CameraSequence *s = Sequence_Active();
+  if (!s) { VehicleClip_Clear(); return; }
+  char path[MAX_PATH];
+  GetSeqJsonPath(s->name.c_str(), path, sizeof(path));
+  FILE *f = nullptr;
+  if (fopen_s(&f, path, "rb") != 0 || !f) { VehicleClip_Clear(); return; }
+  fseek(f, 0, SEEK_END);
+  long len = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  if (len <= 0) { fclose(f); VehicleClip_Clear(); return; }
+  std::vector<char> buf((size_t)len + 1);
+  size_t rd = fread(buf.data(), 1, (size_t)len, f);
+  fclose(f);
+  buf[rd] = 0;
+  if (!VehicleClip_ParseClipsFromBuffer(buf.data(), (int)rd))
+    VehicleClip_Clear();
+}
+
+// One-time migration: rewrite legacy-INI sequences as merged JSON, pulling each
+// one's clips from its old sidecar.
+static void MigrateLegacyToJson() {
+  for (int i = 0; i < (int)s_Sequences.size(); ++i) {
+    char clip[MAX_PATH];
+    GetClipPath(s_Sequences[i].name.c_str(), clip, sizeof(clip));
+    if (!VehicleClip_LoadFromFile(clip)) VehicleClip_Clear();
+    SaveSequenceJson(i);
+  }
+  s_ActiveIdx = s_Sequences.empty() ? -1 : 0;
+  LoadActiveSequenceClips();
+}
+
+void Sequence_LoadAll() {
+  s_Sequences.clear();
+  s_ActiveIdx = -1;
+
+  // Load every per-sequence JSON file from the sequences directory.
+  char dir[MAX_PATH];
+  GetSeqDir(dir, sizeof(dir));
+  char pattern[MAX_PATH];
+  sprintf_s(pattern, "%s\\*.json", dir);
+  WIN32_FIND_DATAA fd;
+  HANDLE h = FindFirstFileA(pattern, &fd);
+  if (h != INVALID_HANDLE_VALUE) {
+    do {
+      if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+      char full[MAX_PATH];
+      sprintf_s(full, "%s\\%s", dir, fd.cFileName);
+      FILE *f = nullptr;
+      if (fopen_s(&f, full, "rb") != 0 || !f) continue;
+      fseek(f, 0, SEEK_END);
+      long len = ftell(f);
+      fseek(f, 0, SEEK_SET);
+      if (len <= 0) { fclose(f); continue; }
+      std::vector<char> buf((size_t)len + 1);
+      size_t rd = fread(buf.data(), 1, (size_t)len, f);
+      fclose(f);
+      buf[rd] = 0;
+      CameraSequence seq;
+      seq.loop = false;
+      seq.playbackSpeed = 1.0f;
+      ParseSequenceJson(buf.data(), (int)rd, seq);
+      s_Sequences.push_back(seq);
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+  }
+
+  if (!s_Sequences.empty()) {
+    s_ActiveIdx = 0;
+    LoadActiveSequenceClips();
+    return;
+  }
+
+  // No JSON yet — migrate from the legacy INI (+ clip sidecars) if present.
+  LoadAllLegacyIni();
+  if (!s_Sequences.empty()) {
+    MigrateLegacyToJson();
+  } else {
+    EnsureActive();
+    VehicleClip_Clear();
+  }
 }
 
 void Sequence_SaveAll() {
-  char path[MAX_PATH];
-  GetSequencesIniPath(path, sizeof(path));
-
-  // First wipe any existing Sequence:* sections so deletions are honored.
-  char names[8192] = {0};
-  GetPrivateProfileSectionNamesA(names, sizeof(names), path);
-  for (const char *p = names; *p; p += strlen(p) + 1) {
-    if (strncmp(p, "Sequence:", 9) == 0) {
-      WritePrivateProfileStringA(p, nullptr, nullptr, path);
-    }
-  }
-
-  for (const auto &s : s_Sequences) {
-    std::string section = "Sequence:" + s.name;
-    char buf[64];
-    sprintf_s(buf, "%d", s.loop ? 1 : 0);
-    WritePrivateProfileStringA(section.c_str(), "Loop", buf, path);
-    sprintf_s(buf, "%.4f", s.playbackSpeed);
-    WritePrivateProfileStringA(section.c_str(), "Speed", buf, path);
-    sprintf_s(buf, "%d", (int)s.poses.size());
-    WritePrivateProfileStringA(section.c_str(), "PoseCount", buf, path);
-    for (int i = 0; i < (int)s.poses.size(); ++i) {
-      char key[32]; sprintf_s(key, "Pose%d", i);
-      char val[512];
-      FormatPose(s.poses[i], val, sizeof(val));
-      WritePrivateProfileStringA(section.c_str(), key, val, path);
-    }
-    sprintf_s(buf, "%d", (int)s.events.size());
-    WritePrivateProfileStringA(section.c_str(), "EventCount", buf, path);
-    for (int i = 0; i < (int)s.events.size(); ++i) {
-      char key[32]; sprintf_s(key, "Event%d", i);
-      char val[256];
-      FormatEvent(s.events[i], val, sizeof(val));
-      WritePrivateProfileStringA(section.c_str(), key, val, path);
-    }
-  }
+  // Only the active sequence can be edited, so persisting it (with its clips) is
+  // sufficient; the others were written when last active / on switch-away.
+  SaveSequenceJson(s_ActiveIdx);
 }

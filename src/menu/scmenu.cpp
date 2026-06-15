@@ -16,6 +16,7 @@
 #include "fx_capture.h" // FxCapture_AddonPresent
 #include "menu.h"     // SetStatusText, SaveSettings, Reset, render globals + ProcessRenderToImages
 #include "sequence.h" // Camera Sequence data model + API
+#include "vehicleclip.h" // record/replay a vehicle path along the sequence timeline
 
 #include "NativeMenu.h"
 
@@ -65,6 +66,9 @@ static gtam::Menu g_SeqFollow("CAMERA SEQUENCE", "Follow & Entity Lock");
 static gtam::Menu g_SeqList("CAMERA SEQUENCE", "Sequences");
 static gtam::Menu g_SeqPlayback("CAMERA SEQUENCE", "Playback");
 static gtam::Menu g_SeqRender("CAMERA SEQUENCE", "Render to Images");
+static gtam::Menu g_SeqVehicle("CAMERA SEQUENCE", "Vehicle Clip");
+static gtam::Menu g_SeqVehicleList("CAMERA SEQUENCE", "Vehicles");
+static gtam::Menu g_SeqVehicleEdit("CAMERA SEQUENCE", "Vehicle");
 
 // Sequence editing mirrors. The framework binds raw pointers, but pose/event
 // vectors can reallocate (capture/add/sort), so editors bind to these stable
@@ -75,8 +79,12 @@ static int s_editPose = -1;
 static int s_editEvent = -1;
 static struct { float t, posX, posY, posZ, pitch, yaw, roll, fov; int easeI, pathI; } s_pm;
 static struct { float t, value; int kindI; bool ramp; } s_em;
+static int s_editVeh = -1;                 // clip index open in the vehicle editor
+static VehicleClipSettings s_vm{};         // vehicle editor mirror (bound by menu)
 static bool s_seqPopRequested = false; // deferred Back() (delete-from-editor)
+static bool s_seqCloseRequested = false; // deferred full close (start a take)
 static DWORD s_seqDelArmed = 0;        // 2-press confirm for Delete Active
+static DWORD s_seqReloadArmed = 0;     // 2-press confirm for Reload from Disk
 static gtam::MenuItem *s_pEventValue = nullptr;
 
 // Render menu: the FPS / blur settings are non-linear preset cycles, so they
@@ -320,6 +328,12 @@ static void BuildTree() {
                     "Hide the game's HUD (radar, health, weapon) for clean shots.");
   g_World.AddToggle("Hide Player Character", &g_HidePlayer, nullptr,
                     "Make your character invisible while filming.");
+  g_World.AddToggle("Stream Around Camera", &g_StreamAroundCamera, nullptr,
+                    "Keep the world's detail (LOD, HD textures, props) loaded "
+                    "around the camera instead of your character. Fixes low "
+                    "detail / pop-in when filming far from the player. Only "
+                    "acts while the player is HIDDEN; unhide the player to film "
+                    "your own character and it stays in place.");
   g_World.AddToggle("Disable Vehicle Shake", &g_DisableVehicleShake, nullptr,
                     "Removes the engine-induced body jitter vehicles have while idling "
                     "and driving, so cars sit dead still for clean shots.");
@@ -707,9 +721,26 @@ static void RebuildSeqList() {
     }
   }, "Delete the current sequence. Press twice within 3s to confirm.")
       .valueGetter = [] { return std::string(GetTickCount() < s_seqDelArmed ? "Confirm?" : ""); };
-  g_SeqList.AddButton("Save All to INI", [] {
-    Sequence_SaveAll(); SetStatusText("Saved to INI");
-  }, "Save every sequence to disk (SimpleCamera_Sequences.ini).");
+  g_SeqList.AddButton("Save Sequence", [] {
+    Sequence_SaveAll(); SetStatusText("Sequence saved");
+  }, "Save the current sequence (keyframes, events and its vehicle clips) to "
+     "its JSON file in SimpleCamera_Sequences\\. Other sequences are saved "
+     "automatically when you switch away from them.");
+  g_SeqList.AddButton("Reload from Disk", [] {
+    DWORD now = GetTickCount();
+    if (now < s_seqReloadArmed) {
+      Sequence_Stop(); Sequence_LoadAll(); s_seqReloadArmed = 0;
+      SetStatusText("Sequences reloaded from disk");
+    } else {
+      s_seqReloadArmed = now + 3000;
+      SetStatusText("Press again to discard unsaved changes and reload");
+    }
+  }, "Re-read all sequences from SimpleCamera_Sequences\\ on disk, discarding "
+     "any unsaved in-memory changes. Useful after hand-editing a JSON. Press "
+     "twice within 3s to confirm.")
+      .valueGetter = [] {
+        return std::string(GetTickCount() < s_seqReloadArmed ? "Confirm?" : "");
+      };
   g_SeqList.AddSeparator("Select Active");
   int n = Sequence_Count();
   for (int i = 0; i < n; ++i) {
@@ -775,6 +806,7 @@ static void RebuildSeqRender() {
 
   const bool blurOn = g_RenderBlurSamples > 1;
   const bool jpeg = g_RenderFormat == 1;
+  const float rdur = Sequence_TotalDuration();
 
   g_SeqRender.AddList("Output FPS", &s_fpsIdx,
                       {"24", "25", "30", "48", "50", "60", "120", "240"},
@@ -782,17 +814,43 @@ static void RebuildSeqRender() {
                       "Frame rate of the exported sequence (sets the total frame count).")
       .valueGetter = [] {
         char b[48];
-        int frames = (int)(Sequence_TotalDuration() * g_RenderFps + 0.5f);
+        // Frame count over the active render range (whole sequence if no range).
+        float d = Sequence_TotalDuration();
+        float st = g_RenderRangeStart < 0 ? 0 : (g_RenderRangeStart > d ? d : g_RenderRangeStart);
+        float en = (g_RenderRangeEnd > 0.0001f && g_RenderRangeEnd <= d) ? g_RenderRangeEnd : d;
+        if (en <= st) { st = 0; en = d; }
+        int frames = (int)((en - st) * g_RenderFps + 0.5f);
         sprintf_s(b, "%d fps - %d fr", (int)g_RenderFps, frames);
         return std::string(b);
       };
+
+  // Optional render range — render only part of the sequence.
+  g_SeqRender.AddFloat("Start Time (s)", &g_RenderRangeStart, 0.0f,
+                       rdur > 0.1f ? rdur : 0.1f, 0.5f, 2, nullptr,
+                       "Render from this point in the sequence (0 = start). Lets "
+                       "you re-render just a section.");
+  g_SeqRender.AddFloat("End Time (s)", &g_RenderRangeEnd, 0.0f,
+                       rdur > 0.1f ? rdur : 0.1f, 0.5f, 2, nullptr,
+                       "Render up to this point. 0 (or <= Start) = render to the "
+                       "end of the sequence.")
+      .valueGetter = [] {
+        if (g_RenderRangeEnd <= 0.0001f) return std::string("to end");
+        char b[16]; sprintf_s(b, "%.1fs", g_RenderRangeEnd); return std::string(b);
+      };
+
   g_SeqRender.AddInt("Flush Frames", &g_RenderFlushFrames, 0, 20, 1, nullptr,
                      "Extra clean frames after the progress banner clears, before each grab.");
   g_SeqRender.AddList("Motion Blur", &s_blurIdx,
                       {"Off", "2", "4", "8", "16", "32", "64", "128"},
                       [](int i) { g_RenderBlurSamples = kRenderBlur[i]; },
-                      "Sub-samples accumulated per output frame (Off = sharp). Requires "
-                      "the IgcsDof.fx shader to be enabled in the ReShade effects menu.");
+                      "Sub-samples blended per output frame (Off = sharp). Each sample "
+                      "is a live frame captured in slow motion, so the game renders "
+                      "'samples' frames for every output frame. Needed in-game FPS is "
+                      "about samples x output-fps x slow-mo (see the 'Needs >=' line "
+                      "below). More samples = smoother blur but needs more FPS; if your "
+                      "FPS is under that, the world overshoots and the blur/sync breaks. "
+                      "Render time scales with samples, NOT slow-mo. Requires the "
+                      "IgcsDof.fx shader enabled in ReShade.");
   {
     auto &it = g_SeqRender.AddFloat("Highlight Boost", &g_RenderHighlightBoost, 0.0f, 0.95f, 0.05f, 2, nullptr,
         "Extra brightness lift on blur streaks. Only used when Motion Blur is on.");
@@ -821,12 +879,55 @@ static void RebuildSeqRender() {
                       "game's buffer format; force RGBA or BGRA if colors come out "
                       "wrong.");
   g_SeqRender.AddFloat("World Slow-mo", &g_RenderSlowmo, 0.0f, 1.0f, 0.01f, 2, nullptr,
-                       "Time scale during capture. Auto (0) picks a safe value per frame.")
+                       "Game time scale during capture. It spreads each output frame's "
+                       "samples across real time so the world moves a little between "
+                       "them (that's what makes the blur). Auto (0) picks the least "
+                       "slow-mo that still fits your FPS - the fastest lossless choice; "
+                       "setting it faster than that makes the world overshoot. It does "
+                       "NOT change render time (sample count does). Can't go below 1% "
+                       "without the game misbehaving.")
       .valueGetter = [] {
         if (g_RenderSlowmo <= 0.0001f) return std::string("Auto");
         char b[8]; sprintf_s(b, "%d%%", (int)(g_RenderSlowmo * 100.0f + 0.5f));
         return std::string(b);
       };
+
+  // Estimated in-game FPS needed for these settings. The render plays in slow
+  // motion and accumulates `samples` consecutive live frames per output frame
+  // (+ flush + a little overhead); each rendered frame advances game time by
+  // slowmo/gameFps, and that work must fit the per-output-frame time budget
+  // (renderSpeed / outFps). Solving for gameFps:
+  //   needFps = (samples + flush + overhead) * slowmo * outFps / renderSpeed
+  // Below this, slow-mo can't compensate, so the world overshoots and the blur /
+  // sync breaks. (Slow-mo can't go below ~1% without the game misbehaving.)
+  {
+    CameraSequence *sq = Sequence_Active();
+    float speed = (sq && sq->playbackSpeed > 0.0001f) ? sq->playbackSpeed : 1.0f;
+    int samples = g_RenderBlurSamples > 1 ? g_RenderBlurSamples : 1;
+    int workFrames = samples + g_RenderFlushFrames + 4; // 2 banner + ~advance
+    bool autoSlow = g_RenderSlowmo <= 0.0001f;
+    float slowmo = autoSlow ? 0.003f : g_RenderSlowmo; // AUTO bottoms out ~0.3%
+    float needFps = (float)workFrames * slowmo * g_RenderFps / speed;
+
+    float ft = GAMEPLAY::GET_FRAME_TIME();
+    float curFps = (ft > 0.0001f) ? (1.0f / ft) : 0.0f;
+
+    char info[96];
+    if (autoSlow)
+      sprintf_s(info, "Needs >= %.0f in-game FPS (Auto slow-mo)", needFps);
+    else
+      sprintf_s(info, "Needs approx %.0f in-game FPS @ %d%% slow-mo", needFps,
+                (int)(g_RenderSlowmo * 100.0f + 0.5f));
+    g_SeqRender.AddLabel(info);
+    if (curFps > 1.0f) {
+      char cur[64];
+      bool low = curFps < needFps * 0.95f;
+      sprintf_s(cur, "Your FPS now: %.0f%s", curFps,
+                low ? "  - TOO LOW, blur may break" : "  - OK");
+      g_SeqRender.AddLabel(cur);
+    }
+  }
+
   g_SeqRender.AddButton("Start Render", [] {
     if (FxCapture_AddonPresent()) ProcessRenderToImages();
     else SetStatusText("Rendering needs ReShade + IgcsConnector addon");
@@ -841,6 +942,198 @@ static void RebuildSeqRender() {
   if (sel < 0) sel = 0;
   g_SeqRender.selected = sel;
   g_SeqRender.scrollOffset = scroll;
+}
+
+// Rebuilt each frame it's shown so the record status / clip length / button
+// labels track the live recording state.
+static void RebuildSeqVehicle() {
+  int sel = g_SeqVehicle.selected, scroll = g_SeqVehicle.scrollOffset;
+  g_SeqVehicle.items.clear();
+
+  const bool rec = VehicleClip_IsRecording();
+  const bool hasData = VehicleClip_HasData();
+  const int clipCount = VehicleClip_Count();
+
+  char info[96];
+  if (rec)
+    sprintf_s(info, "Recording vehicle #%d... %.1fs", clipCount + 1,
+              VehicleClip_Duration());
+  else if (clipCount > 0)
+    sprintf_s(info, "%d vehicle%s,  %.1fs", clipCount, clipCount == 1 ? "" : "s",
+              VehicleClip_Duration());
+  else
+    sprintf_s(info, "No vehicles recorded");
+  g_SeqVehicle.AddLabel(info);
+
+  {
+    auto &it = g_SeqVehicle.AddButton(
+        clipCount > 0 ? "Record Another Vehicle" : "Record Vehicle Path",
+        [] {
+          if (VehicleClip_StartRecording()) {
+            s_seqCloseRequested = true; // hide the menu so the player can drive
+            SetStatusText("Recording - drive, press the Menu key to stop");
+          } else {
+            SetStatusText("Get into a (non-ghost) vehicle first, then record");
+          }
+        },
+        "Hands you the wheel: the free camera drops, you drive the take, and the "
+        "Menu key stops it and brings the camera back. Any vehicles already "
+        "recorded replay around you so you can choreograph against them. Each "
+        "take shares the same timeline (t=0). (You must be sitting in a vehicle "
+        "that isn't one of the ghosts.)");
+    it.enabled = !rec;
+    it.valueGetter = [] { return std::string("Press Enter"); };
+  }
+
+  {
+    auto &it = g_SeqVehicle.AddButton(
+        "Replay On Timeline",
+        [] { VehicleClip_SetEnabled(!VehicleClip_Enabled()); },
+        "When on, scrubbing/playing the sequence drives the recorded vehicle "
+        "along its path so the camera stays in sync with it.");
+    it.enabled = hasData && !rec;
+    it.valueGetter = [] {
+      return std::string(VehicleClip_Enabled() ? "On" : "Off");
+    };
+  }
+
+  {
+    auto &it = g_SeqVehicle.AddButton(
+        "Delete Last Vehicle",
+        [] {
+          int n = VehicleClip_Count();
+          if (n > 0) {
+            VehicleClip_DeleteClip(n - 1);
+            SetStatusText("Deleted last recorded vehicle");
+          }
+        },
+        "Remove the most recently recorded vehicle (and its ghost), keeping the "
+        "earlier ones.");
+    it.enabled = clipCount > 0 && !rec;
+  }
+
+  {
+    auto &it = g_SeqVehicle.AddButton(
+        "Clear All Vehicles",
+        [] { VehicleClip_Clear(); SetStatusText("All vehicle clips cleared"); },
+        "Delete every recorded vehicle path and remove their ghosts.");
+    it.enabled = hasData && !rec;
+  }
+
+  {
+    auto &it = g_SeqVehicle.AddSubmenu(
+        "Per-Vehicle Settings", &g_SeqVehicleList,
+        "Tune each recorded vehicle on its own: playback speed, start-time "
+        "offset, lights, engine, siren, driver, collision and godmode.");
+    it.enabled = clipCount > 0;
+    it.valueGetter = [] {
+      char b[16]; sprintf_s(b, "%d", VehicleClip_Count()); return std::string(b);
+    };
+  }
+
+  {
+    auto &it = g_SeqVehicle.AddInt(
+        "Sample Rate (Hz)", &g_VehicleClipSampleHz, 0, 120, 10, nullptr,
+        "How many vehicle states per second to record. Playback interpolates, "
+        "so a lower rate shrinks the saved clip with little visible cost. "
+        "0 = capture every frame (largest, most exact).");
+    it.enabled = !rec;
+    it.valueGetter = [] {
+      if (g_VehicleClipSampleHz <= 0) return std::string("Every frame");
+      char b[16]; sprintf_s(b, "%d Hz", g_VehicleClipSampleHz); return std::string(b);
+    };
+  }
+
+  g_SeqVehicle.AddFloat(
+      "Steering Strength", &g_VehicleClipSteerGain, 0.0f, 3.0f, 0.25f, 2, nullptr,
+      "Steering is replayed from the real recorded wheel angles, so 1.0 is "
+      "exact. Raise it only for an exaggerated/cinematic wheel turn, lower for "
+      "subtler, or 0 to disable. (Also scales steering on older clips recorded "
+      "before per-wheel steer capture.)");
+
+  g_SeqVehicle.AddSeparator("Defaults for newly recorded vehicles");
+
+  g_SeqVehicle.AddToggle(
+      "Default: Show Driver", &g_VehicleClipShowDriver, nullptr,
+      "Default for NEW recordings (each vehicle can override in Per-Vehicle "
+      "Settings): seat the recorded driver ped inside the car.");
+
+  g_SeqVehicle.AddToggle(
+      "Default: Collision", &g_VehicleClipGhostCollision, nullptr,
+      "Default for NEW recordings (override per-vehicle): keep collision ON so "
+      "the car shoves objects along its path. Off = smooth deterministic replay.");
+
+  g_SeqVehicle.AddToggle(
+      "Default: Godmode", &g_VehicleClipGhostGodmode, nullptr,
+      "Default for NEW recordings (override per-vehicle): keep the car pristine "
+      "(invincible + auto-repair, no damage).");
+
+  g_SeqVehicle.AddLabel("Clips save/load automatically with the sequence.");
+
+  int cnt = (int)g_SeqVehicle.items.size();
+  if (sel >= cnt) sel = cnt - 1;
+  if (sel < 0) sel = 0;
+  g_SeqVehicle.selected = sel;
+  g_SeqVehicle.scrollOffset = scroll;
+}
+
+// ---- Per-vehicle editor (mirror <-> live clip settings) ----
+static void LoadVehMirror() {
+  if (!VehicleClip_GetSettings(s_editVeh, &s_vm)) {
+    s_vm = VehicleClipSettings{};
+    s_vm.enabled = true; s_vm.speed = 1.0f;
+  }
+}
+static void WriteVehMirror() {
+  VehicleClipSettings probe;
+  if (!VehicleClip_GetSettings(s_editVeh, &probe)) { // clip vanished under us
+    s_seqPopRequested = true;
+    return;
+  }
+  if (s_vm.speed < 0.05f) s_vm.speed = 0.05f; // guard the divisor
+  VehicleClip_SetSettings(s_editVeh, &s_vm);
+}
+static void DeleteEditVeh() {
+  if (s_editVeh >= 0) {
+    VehicleClip_DeleteClip(s_editVeh);
+    s_editVeh = -1;
+    SetStatusText("Vehicle deleted");
+  }
+  s_seqPopRequested = true; // leave the editor (deferred)
+}
+
+// Rebuilt each frame it's shown: one row per recorded vehicle -> its editor.
+static void RebuildSeqVehicleList() {
+  int sel = g_SeqVehicleList.selected, scroll = g_SeqVehicleList.scrollOffset;
+  g_SeqVehicleList.items.clear();
+  int n = VehicleClip_Count();
+  if (n == 0) g_SeqVehicleList.AddLabel("No vehicles recorded yet.");
+  for (int i = 0; i < n; ++i) {
+    char nm[40];
+    VehicleClip_GetLabel(i, nm, sizeof(nm));
+    VehicleClipSettings st{};
+    VehicleClip_GetSettings(i, &st);
+    char label[64];
+    sprintf_s(label, "%s%s", nm, st.enabled ? "" : "  (off)");
+    auto &it = g_SeqVehicleList.AddButton(
+        label, [i] { s_editVeh = i; g_Ctrl.Push(&g_SeqVehicleEdit); },
+        "Open this vehicle's settings (speed, offset, lights, engine, siren, "
+        "driver, collision, godmode).");
+    it.valueGetter = [i] {
+      VehicleClipSettings s{};
+      if (!VehicleClip_GetSettings(i, &s)) return std::string("");
+      char b[24];
+      if (s.offset < -0.01f || s.offset > 0.01f)
+        sprintf_s(b, "%gx %+.1fs", s.speed, s.offset); // %+ shows the sign
+      else sprintf_s(b, "%gx", s.speed);
+      return std::string(b);
+    };
+  }
+  int cnt = (int)g_SeqVehicleList.items.size();
+  if (sel >= cnt) sel = cnt - 1;
+  if (sel < 0) sel = 0;
+  g_SeqVehicleList.selected = sel;
+  g_SeqVehicleList.scrollOffset = scroll;
 }
 
 static void BuildSeqTree() {
@@ -897,6 +1190,33 @@ static void BuildSeqTree() {
   g_SeqEventEdit.AddButton("Delete Event", [] { DeleteEditEvent(); },
                            "Remove this effect event.");
 
+  // ---- Per-vehicle editor (mirror-bound) ----
+  g_SeqVehicleEdit.onPush = [] { LoadVehMirror(); };
+  g_SeqVehicleEdit.AddToggle("Enabled", &s_vm.enabled, nullptr,
+      "Replay this vehicle. Off = muted (kept but not shown/despawned).");
+  g_SeqVehicleEdit.AddFloat("Playback Speed", &s_vm.speed, 0.1f, 4.0f, 0.05f, 2, nullptr,
+      "Speed multiplier for this car's motion (1.0 = as recorded, 2 = twice as fast). "
+      "Reshapes how long it takes on the timeline.");
+  g_SeqVehicleEdit.AddFloat("Time Offset (s)", &s_vm.offset, -100000.0f, 100000.0f, 0.1f, 2, nullptr,
+      "Shift this car on the timeline. Positive = starts later (holds at its "
+      "first frame until then). Negative = starts already in motion (skips the "
+      "first seconds of its recording, so it's mid-drive at t=0).");
+  g_SeqVehicleEdit.AddList("Lights", &s_vm.lights, {"Auto", "On", "Off", "On + Full Beam"},
+      nullptr, "Force this car's head/tail lights: Auto (game default), On, Off, "
+               "or On with high beams.");
+  g_SeqVehicleEdit.AddToggle("Engine Running", &s_vm.engineOn, nullptr,
+      "Engine on (idle anim, exhaust, working lights) or off (dead car).");
+  g_SeqVehicleEdit.AddToggle("Siren", &s_vm.siren, nullptr,
+      "Emergency siren + flashing lights (police / ambulance / fire trucks).");
+  g_SeqVehicleEdit.AddToggle("Show Driver", &s_vm.showDriver, nullptr,
+      "Seat the recorded driver ped inside this car.");
+  g_SeqVehicleEdit.AddToggle("Collision", &s_vm.collision, nullptr,
+      "Keep collision on so this car shoves objects it passes through (impacts).");
+  g_SeqVehicleEdit.AddToggle("Godmode", &s_vm.godmode, nullptr,
+      "Keep this car pristine: invincible + auto-repair (no dents, full health).");
+  g_SeqVehicleEdit.AddButton("Delete This Vehicle", [] { DeleteEditVeh(); },
+      "Remove this recorded vehicle from the sequence.");
+
   // ---- Follow & Entity Lock ----
   g_SeqFollow.AddList("Follow Mode", &g_FollowMode,
                       {"None", "Player", "Aimed Entity"},
@@ -946,6 +1266,7 @@ static void BuildSeqTree() {
   g_SeqList.onPush = [] { RebuildSeqList(); };
   g_SeqPlayback.onPush = [] { BuildSeqPlayback(); };
   g_SeqRender.onPush = [] { SyncRenderMirrors(); RebuildSeqRender(); };
+  g_SeqVehicle.onPush = [] { RebuildSeqVehicle(); };
 }
 
 // ============================================================
@@ -1046,7 +1367,7 @@ static void RebuildRoot() {
           return std::string(b);
         };
     g_Root.AddSubmenu("Effect Events", &g_SeqEvents,
-                      "Timed effect changes along the timeline (shake, world speed, etc.).")
+                      "Timed effect changes along the timeline (shake events).")
         .valueGetter = [] {
           CameraSequence *s = Sequence_Active();
           char b[16]; sprintf_s(b, "%d", s ? (int)s->events.size() : 0);
@@ -1056,6 +1377,19 @@ static void RebuildRoot() {
                       "Loop, playback speed, loop-closing and in-world markers.");
     g_Root.AddSubmenu("Follow & Entity Lock", &g_SeqFollow,
                       "Lock the camera or keyframes to a moving ped/vehicle.");
+    g_Root.AddSubmenu("Vehicle Clip", &g_SeqVehicle,
+                      "Record a vehicle's drive and replay it in sync with the "
+                      "timeline so the camera lines up frame-for-frame.")
+        .valueGetter = [] {
+          if (VehicleClip_IsRecording()) return std::string("REC");
+          int n = VehicleClip_Count();
+          if (n > 0) {
+            char b[32]; sprintf_s(b, "%dx %.1fs %s", n, VehicleClip_Duration(),
+                                  VehicleClip_Enabled() ? "On" : "Off");
+            return std::string(b);
+          }
+          return std::string("empty");
+        };
     g_Root.AddSubmenu("Sequences", &g_SeqList,
                       "Create, pick, delete and save your sequences.")
         .valueGetter = [] {
@@ -1105,6 +1439,9 @@ static void SeqMenu_FrameSync() {
   else if (cur == &g_SeqEvents) { RebuildEventList(); }
   else if (cur == &g_SeqList) { RebuildSeqList(); }
   else if (cur == &g_SeqRender) { RebuildSeqRender(); }
+  else if (cur == &g_SeqVehicle) { RebuildSeqVehicle(); }
+  else if (cur == &g_SeqVehicleList) { RebuildSeqVehicleList(); }
+  else if (cur == &g_SeqVehicleEdit) { WriteVehMirror(); }
   else if (cur == &g_SeqPoseEdit) { WritePoseMirror(); }
   else if (cur == &g_SeqEventEdit) {
     WriteEventMirror();
@@ -1155,6 +1492,13 @@ void SCMenu_Update() {
   if (s_seqPopRequested) {
     s_seqPopRequested = false;
     g_Ctrl.Back();
+  }
+  // Deferred full close (e.g. starting a vehicle-clip take so the player can
+  // drive) — also after Update to avoid mutating the stack mid-frame.
+  if (s_seqCloseRequested) {
+    s_seqCloseRequested = false;
+    g_Ctrl.Close();
+    visible = false;
   }
 
   // Tell the free camera a menu is up so it suppresses input it shares with

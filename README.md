@@ -77,6 +77,10 @@ network natives when running under FiveM).
 
 **Camera Sequence (cinematics)**
 
+- **Vehicle recording** — record one or more vehicles driving and replay them in
+  sync with the camera timeline, so the camera lines up with the action
+  frame-for-frame. Each recorded vehicle has its own settings (playback speed,
+  start timing, lights, driver, and more).
 - Keyframe the camera over a timeline (position, rotation, FOV).
 - Per-keyframe **easing** (Linear, Ease-In, Ease-Out, Ease-In-Out, Hold) and
   **path type** (straight Linear or smooth **Catmull-Rom spline**).
@@ -91,7 +95,7 @@ network natives when running under FiveM).
 **Quality of life**
 
 - All tunables persist to a plain `SimpleCamera.ini`.
-- Sequences persist to `SimpleCamera_Sequences.ini`.
+- Sequences (and their recorded vehicles) save to disk and reload automatically.
 - Full **controller** support (no keyboard needed to drive the menu or camera).
 
 ---

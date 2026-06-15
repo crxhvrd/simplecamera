@@ -14,6 +14,7 @@
 #include "menu.h"
 #include "scmenu.h"
 #include "sequence.h"
+#include "vehicleclip.h"
 
 #include "external\scripthook_sdk\inc\natives.h"
 
@@ -48,41 +49,55 @@ void main() {
   g_FreeCamActive = false;
 
   while (true) {
-    // Check for menu toggle — F5 on keyboard, or LB+RB on a controller (a pad
-    // has no menu key otherwise).
-    // F5 (and controller LB+RB) — the menu. Frame-driven: toggle on press,
-    // drive every frame below.
-    if (IsMenuTogglePressed() || IsControllerMenuCombo()) {
-      MenuBeep();
-      SCMenu_Toggle();
-    }
-    SCMenu_Update();
+    // Sample the vehicle path while a recording is active (no-op otherwise).
+    VehicleClip_RecordTick();
 
-    // Controller LB+B exits Free Camera straight back to the picker, so pad
-    // users can bail without opening the menu.
-    if (g_CameraMode == 0 && g_FreeCamActive && IsControllerExitCombo()) {
-      MenuBeep();
-      DestroyFreeCamera();
-      g_CameraMode = -1;
-    }
-
-    // F10 — Phase 1 capture test: ask the ReShade addon to write the current
-    // frame to a PNG under SimpleCamera_Captures. Press while flying (menu
-    // closed) for a clean frame.
-    if (IsKeyJustUp(VK_F10)) {
-      char savedPath[MAX_PATH];
-      if (FxCapture_CaptureTest(savedPath, sizeof(savedPath))) {
-        SetStatusText("Frame capture requested");
-      } else {
-        SetStatusText("Capture channel unavailable (addon not loaded?)");
+    if (VehicleClip_IsRecording()) {
+      // Manual-drive recording session: the free camera is suspended and the
+      // player has the wheel. The menu and camera dispatch are paused; only the
+      // Menu key is live, and it STOPS the take (restoring the free camera).
+      VehicleClip_DrawRecordingBanner();
+      if (IsMenuTogglePressed() || IsControllerMenuCombo()) {
+        MenuBeep();
+        VehicleClip_StopRecording();
+        ConsumeMenuToggle(); // same release must not re-open the menu next frame
       }
-    }
+    } else {
+      // Check for menu toggle — F5 on keyboard, or LB+RB on a controller (a pad
+      // has no menu key otherwise). Frame-driven: toggle on press, drive every
+      // frame below.
+      if (IsMenuTogglePressed() || IsControllerMenuCombo()) {
+        MenuBeep();
+        SCMenu_Toggle();
+      }
+      SCMenu_Update();
 
-    // Mode dispatch — Free Camera and Camera Sequence are mutually exclusive
-    if (g_CameraMode == 1 && Sequence_IsInMode()) {
-      Sequence_FrameTick();
-    } else if (g_FreeCamActive) {
-      UpdateFreeCamera();
+      // Controller LB+B exits Free Camera straight back to the picker, so pad
+      // users can bail without opening the menu.
+      if (g_CameraMode == 0 && g_FreeCamActive && IsControllerExitCombo()) {
+        MenuBeep();
+        DestroyFreeCamera();
+        g_CameraMode = -1;
+      }
+
+      // F10 — Phase 1 capture test: ask the ReShade addon to write the current
+      // frame to a PNG under SimpleCamera_Captures. Press while flying (menu
+      // closed) for a clean frame.
+      if (IsKeyJustUp(VK_F10)) {
+        char savedPath[MAX_PATH];
+        if (FxCapture_CaptureTest(savedPath, sizeof(savedPath))) {
+          SetStatusText("Frame capture requested");
+        } else {
+          SetStatusText("Capture channel unavailable (addon not loaded?)");
+        }
+      }
+
+      // Mode dispatch — Free Camera and Camera Sequence are mutually exclusive
+      if (g_CameraMode == 1 && Sequence_IsInMode()) {
+        Sequence_FrameTick();
+      } else if (g_FreeCamActive) {
+        UpdateFreeCamera();
+      }
     }
 
     // Drive the player's vehicle via AI when Auto Drive is engaged (no-op

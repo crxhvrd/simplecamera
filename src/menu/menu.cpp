@@ -15,6 +15,7 @@
 #include "keyboard.h"
 #include "scmenu.h" // menu-appearance globals (position/scale/accent)
 #include "sequence.h"
+#include "vehicleclip.h" // g_VehicleClipSampleHz
 
 #include <cstdio>
 #include <string>
@@ -150,6 +151,7 @@ void LoadSettings() {
   g_HidePlayer = IniReadBool("Misc", "HidePlayer", g_HidePlayer, path);
   g_MovePlayerWithCamera = IniReadBool("Misc", "MovePlayerWithCamera", g_MovePlayerWithCamera, path);
   g_RememberCamPosition = IniReadBool("Misc", "RememberCamPosition", g_RememberCamPosition, path);
+  g_StreamAroundCamera = IniReadBool("Misc", "StreamAroundCamera", g_StreamAroundCamera, path);
   g_ShowInfoOverlay = IniReadBool("Misc", "ShowInfoOverlay", g_ShowInfoOverlay, path);
   g_DisableVehicleShake = IniReadBool("Misc", "DisableVehicleShake", g_DisableVehicleShake, path);
   g_ShowLockedEntityMarker = IniReadBool("Misc", "ShowLockedEntityMarker", g_ShowLockedEntityMarker, path);
@@ -182,6 +184,19 @@ void LoadSettings() {
   g_SeqPathR = GetPrivateProfileIntA("Sequence", "PathR", g_SeqPathR, path);
   g_SeqPathG = GetPrivateProfileIntA("Sequence", "PathG", g_SeqPathG, path);
   g_SeqPathB = GetPrivateProfileIntA("Sequence", "PathB", g_SeqPathB, path);
+  g_VehicleClipSampleHz =
+      GetPrivateProfileIntA("Sequence", "ClipSampleHz", g_VehicleClipSampleHz, path);
+  g_VehicleClipSteerGain =
+      IniReadFloat("Sequence", "ClipSteerGain", g_VehicleClipSteerGain, path);
+  g_VehicleClipShowDriver =
+      GetPrivateProfileIntA("Sequence", "ClipShowDriver",
+                            g_VehicleClipShowDriver ? 1 : 0, path) != 0;
+  g_VehicleClipGhostCollision =
+      GetPrivateProfileIntA("Sequence", "ClipGhostCollision",
+                            g_VehicleClipGhostCollision ? 1 : 0, path) != 0;
+  g_VehicleClipGhostGodmode =
+      GetPrivateProfileIntA("Sequence", "ClipGhostGodmode",
+                            g_VehicleClipGhostGodmode ? 1 : 0, path) != 0;
 }
 
 // Persist all tunable settings to the INI. Called from the Misc menu's
@@ -247,6 +262,7 @@ void SaveSettings() {
   wb("Misc", "HidePlayer", g_HidePlayer);
   wb("Misc", "MovePlayerWithCamera", g_MovePlayerWithCamera);
   wb("Misc", "RememberCamPosition", g_RememberCamPosition);
+  wb("Misc", "StreamAroundCamera", g_StreamAroundCamera);
   wb("Misc", "ShowInfoOverlay", g_ShowInfoOverlay);
   wb("Misc", "DisableVehicleShake", g_DisableVehicleShake);
   wb("Misc", "ShowLockedEntityMarker", g_ShowLockedEntityMarker);
@@ -277,6 +293,11 @@ void SaveSettings() {
   wi("Sequence", "PathR", g_SeqPathR);
   wi("Sequence", "PathG", g_SeqPathG);
   wi("Sequence", "PathB", g_SeqPathB);
+  wi("Sequence", "ClipSampleHz", g_VehicleClipSampleHz);
+  wf("Sequence", "ClipSteerGain", g_VehicleClipSteerGain);
+  wi("Sequence", "ClipShowDriver", g_VehicleClipShowDriver ? 1 : 0);
+  wi("Sequence", "ClipGhostCollision", g_VehicleClipGhostCollision ? 1 : 0);
+  wi("Sequence", "ClipGhostGodmode", g_VehicleClipGhostGodmode ? 1 : 0);
 }
 
 // Restore every persisted tunable to its factory default вЂ” the same values as
@@ -327,6 +348,7 @@ void ResetSettingsToDefaults() {
 
   g_MovePlayerWithCamera = false;
   g_RememberCamPosition = false;
+  g_StreamAroundCamera = true;
   g_ShowInfoOverlay = false;
   g_DisableVehicleShake = false;
   g_ShowLockedEntityMarker = true;
@@ -349,6 +371,11 @@ void ResetSettingsToDefaults() {
   g_SeqPathR = 100;
   g_SeqPathG = 180;
   g_SeqPathB = 255;
+  g_VehicleClipSampleHz = 30;
+  g_VehicleClipSteerGain = 1.0f;
+  g_VehicleClipShowDriver = true;
+  g_VehicleClipGhostCollision = false;
+  g_VehicleClipGhostGodmode = true;
 }
 
 // ============================================================
@@ -356,6 +383,11 @@ void ResetSettingsToDefaults() {
 // ============================================================
 
 bool IsMenuTogglePressed() { return IsKeyJustUp(g_MenuKey); }
+
+// Clear the menu key's "just up" state so a single release can't be consumed
+// twice in consecutive frames (e.g. the press that stops a vehicle-clip take
+// shouldn't also re-open the menu on the next frame).
+void ConsumeMenuToggle() { ResetKeyState(g_MenuKey); }
 
 // True when the player's most recent input came from a gamepad (not keyboard +
 // mouse). The frontend controls our pad combos read are ALSO bound to keyboard
@@ -467,6 +499,8 @@ int g_RenderChannelOrder = 0;  // captured channel order: 0 = Auto (addon
                                       // detects the back-buffer format), 1 = RGBA,
                                       // 2 = BGRA. Fixes red/blue-inverted output
                                       // on swapchains the fixed order guessed wrong.
+float g_RenderRangeStart = 0.0f; // render range start (s); 0 = sequence start
+float g_RenderRangeEnd = 0.0f;   // render range end (s); <=0 / <=start = to end
 
 // Centered progress banner. Only drawn on settle frames вЂ” never on the frame
 // the addon actually captures, so it can't bleed into the output.
@@ -505,7 +539,16 @@ void ProcessRenderToImages() {
   // both advance by the same per-frame sequence step).
   float renderSpeed = (s->playbackSpeed > 0.0001f) ? s->playbackSpeed : 1.0f;
   const float stepT = renderSpeed / g_RenderFps; // sequence-time per output frame
-  int total = (int)(dur / renderSpeed * g_RenderFps + 0.5f);
+  // Optional time range: render only [rangeStart, rangeEnd]. end<=0 or <=start
+  // means "to the end". Lets you re-render just a section of the sequence.
+  float rangeStart = g_RenderRangeStart;
+  if (rangeStart < 0.0f) rangeStart = 0.0f;
+  if (rangeStart > dur) rangeStart = dur;
+  float rangeEnd = (g_RenderRangeEnd > 0.0001f) ? g_RenderRangeEnd : dur;
+  if (rangeEnd > dur) rangeEnd = dur;
+  if (rangeEnd <= rangeStart) { rangeStart = 0.0f; rangeEnd = dur; } // bad range -> full
+  float rangeLen = rangeEnd - rangeStart;
+  int total = (int)(rangeLen / renderSpeed * g_RenderFps + 0.5f);
   if (total < 1) {
     SetStatusText("Sequence too short to render");
     return;
@@ -586,7 +629,7 @@ void ProcessRenderToImages() {
 
     float savedSpeed = s->playbackSpeed;
     s->playbackSpeed = 1.0f; // 1:1 so output frame i maps to sequence time i/fps
-    Sequence_SetCurrentTime(0.0f);
+    Sequence_SetCurrentTime(rangeStart); // start at the range's beginning
     Sequence_Play(); // Play snapshots/restores shake config itself
 
     auto stepDyn = [&](bool banner) {
@@ -602,7 +645,7 @@ void ProcessRenderToImages() {
     int cap = 0;
     while (cap < total && !cancelled && !addonFail) {
       progDone = cap;
-      float target = (float)cap * stepT; // sequence time for this output frame
+      float target = rangeStart + (float)cap * stepT; // sequence time for this frame
       int safety = 0;
       while (Sequence_CurrentTime() < target && !cancelled) {
         stepDyn(true);

@@ -26,6 +26,8 @@ void ResetSettingsToDefaults(); // restore every tunable to its factory default
 
 // Menu toggle key
 bool IsMenuTogglePressed();
+// Clear the menu key's edge state so the same release isn't acted on twice.
+void ConsumeMenuToggle();
 
 // Controller combos (no keyboard on a pad). Edge-triggered, poll once per frame.
 bool IsControllerMenuCombo(); // LB + RB  -> open the menu
@@ -44,6 +46,11 @@ extern int g_RenderJpegQuality;
 extern float g_RenderSlowmo;
 extern float g_RenderHighlightBoost;
 extern int g_RenderChannelOrder;
+// Optional render time range (seconds). Render only [start, end] of the
+// sequence; end <= 0 (or <= start) means "to the end". Lets you re-render just a
+// section. Frame numbering still starts at 0.
+extern float g_RenderRangeStart;
+extern float g_RenderRangeEnd;
 
 // Run the deterministic offline render (blocks until the sequence is written or
 // cancelled). Needs the ReShade + IgcsConnector capture addon.

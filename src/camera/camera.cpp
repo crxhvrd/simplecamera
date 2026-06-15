@@ -9,6 +9,7 @@
 #include "camera.h"
 #include "igcs_bridge.h"
 #include "keyboard.h"
+#include "vehicleclip.h" // recorded-vehicle ghost handle for streaming focus
 #include <cmath>
 #include <cstdio>
 
@@ -123,6 +124,7 @@ bool g_HideHUD = false;
 bool g_DisableVehicleShake = false;
 bool g_HidePlayer = false;
 bool g_RememberCamPosition = false;
+bool g_StreamAroundCamera = true;
 bool g_FreezeWorld = false;     // Pause Game (SET_GAME_PAUSED)
 bool g_FreezeEntities = false;  // Freeze All Entities (camera stays live)
 float g_WorldTimeScale = 1.0f;
@@ -179,6 +181,12 @@ static float s_IgcsPitchOffset = 0.0f, s_IgcsYawOffset = 0.0f,
              s_IgcsRollOffset = 0.0f;
 static Ped s_FrozenPed = 0;
 static bool s_HasSavedPosition = false;
+// Stream-around-camera: the player ped's real position (saved on entry) and
+// whether we've been relocating it to the camera, so we can put it back.
+static float s_PlayerHomeX = 0, s_PlayerHomeY = 0, s_PlayerHomeZ = 0;
+static bool s_PlayerMoved = false;
+static bool s_FocusSet = false;     // SET_FOCUS_ENTITY active (in-vehicle case)
+static bool s_StreamActive = false; // currently anchoring streaming to the cam
 static Entity s_RotationAnchor = 0;
 
 // Drone physics state
@@ -470,6 +478,12 @@ void InitFreeCamera() {
   // Freeze the player ped (unless player movement is enabled)
   Ped playerPed = PLAYER::PLAYER_PED_ID();
   s_FrozenPed = playerPed;
+  // Remember where the player really is, so "stream around camera" can put them
+  // back on exit instead of stranding them wherever the camera ended.
+  Vector3 home = ENTITY::GET_ENTITY_COORDS(playerPed, TRUE);
+  s_PlayerHomeX = home.x; s_PlayerHomeY = home.y; s_PlayerHomeZ = home.z;
+  s_PlayerMoved = false;
+  s_StreamActive = false;
   if (!g_EnablePlayerMovement) {
     ENTITY::FREEZE_ENTITY_POSITION(playerPed, TRUE);
     ENTITY::SET_ENTITY_COLLISION(playerPed, FALSE, FALSE);
@@ -496,11 +510,75 @@ void SnapCameraToPlayer() {
     return;
   Ped ped = PLAYER::PLAYER_PED_ID();
   Vector3 p = ENTITY::GET_ENTITY_COORDS(ped, TRUE);
+  // If stream-around-camera has parked the ped at the camera, its live coords
+  // are useless — snap to the player's real (home) position instead.
+  if (s_PlayerMoved) { p.x = s_PlayerHomeX; p.y = s_PlayerHomeY; p.z = s_PlayerHomeZ; }
   s_PosX = p.x;
   s_PosY = p.y;
   s_PosZ = p.z + 2.0f;
   // Don't let the big position jump spike the speed-coupled shake for a frame.
   s_HasPrevPos = false;
+}
+
+// Keep the world streaming/LOD centered on the camera rather than the player's
+// real position. The strongest lever is the player ped itself (the streamer
+// prioritizes around it), so when the ped is frozen and on foot we teleport it
+// to the camera each frame (it's hidden, collision-off, so it's invisible and
+// inert). When that's not possible (player driving / movement enabled) we fall
+// back to the streaming focus + HD area at the camera. Called every frame while
+// a scripted cam is up; paired with StreamFollowClear() on teardown.
+static void StreamFollowClear(); // defined below
+
+static void StreamFollowTick() {
+  if (s_Cam == 0) return;
+  // Only commandeer the player as a streaming anchor when it's HIDDEN (not in
+  // the shot). The instant the player is unhidden — i.e. you're filming your own
+  // character — leave it where it is so it stays in frame; the game already
+  // streams detail around a visible player. Undo any prior anchoring once.
+  bool want = g_StreamAroundCamera && g_HidePlayer;
+  if (!want) {
+    if (s_StreamActive) { StreamFollowClear(); s_StreamActive = false; }
+    return;
+  }
+  s_StreamActive = true;
+  // Primary anchor: when the player ped is frozen and ON FOOT, teleport it to
+  // the camera so the world streams/LODs (and HD textures) around the shot. It's
+  // hidden + collision-off, so it's invisible and inert. This is the most
+  // accurate (it targets the exact camera position) and uses only SDK natives.
+  Ped ped = s_FrozenPed;
+  bool onFoot = ENTITY::DOES_ENTITY_EXIST(ped) && ENTITY::IS_ENTITY_A_PED(ped) &&
+                PED::GET_VEHICLE_PED_IS_IN(ped, FALSE) == 0;
+  if (!g_EnablePlayerMovement && onFoot) {
+    if (s_FocusSet) { STREAMING::CLEAR_FOCUS(); s_FocusSet = false; } // switched modes
+    ENTITY::SET_ENTITY_COORDS_NO_OFFSET(ped, s_PosX, s_PosY, s_PosZ, FALSE, FALSE,
+                                        FALSE);
+    s_PlayerMoved = true;
+    return;
+  }
+  // Fallback when the ped can't be relocated (player sitting in a vehicle, which
+  // is the common case while filming a recorded clip): point the streaming FOCUS
+  // at the recorded-vehicle ghost — the subject of the shot — so detail streams
+  // around it. SET_FOCUS_ENTITY is a real SDK native (unlike SET_FOCUS_POS_*).
+  int subject = VehicleClip_VehicleHandle();
+  if (subject != 0 && ENTITY::DOES_ENTITY_EXIST(subject)) {
+    STREAMING::SET_FOCUS_ENTITY(subject);
+    s_FocusSet = true;
+  }
+}
+
+// Undo StreamFollowTick: clear focus/HD overrides and put the player back where
+// they really were. Call on camera teardown (before the ped is unfrozen).
+static void StreamFollowClear() {
+  if (s_FocusSet) {
+    STREAMING::CLEAR_FOCUS();
+    s_FocusSet = false;
+  }
+  if (s_PlayerMoved && ENTITY::DOES_ENTITY_EXIST(s_FrozenPed)) {
+    ENTITY::SET_ENTITY_COORDS_NO_OFFSET(s_FrozenPed, s_PlayerHomeX, s_PlayerHomeY,
+                                        s_PlayerHomeZ, FALSE, FALSE, FALSE);
+  }
+  s_PlayerMoved = false;
+  s_StreamActive = false;
 }
 
 // Quick action — zero the camera roll ("level the horizon"). Works in both the
@@ -548,6 +626,10 @@ void DestroyFreeCamera() {
   // even when Auto Drive was never engaged.
   AutoDrive_Stop();
 
+  // Stop streaming around the camera and put the player back at their real
+  // position before unfreezing — otherwise they'd be stranded at the camera.
+  StreamFollowClear();
+
   // Restore player
   if (ENTITY::DOES_ENTITY_EXIST(s_FrozenPed)) {
     ENTITY::FREEZE_ENTITY_POSITION(s_FrozenPed, FALSE);
@@ -586,6 +668,56 @@ void DestroyFreeCamera() {
 
   g_FreeCamActive = false;
 }
+
+// ============================================================
+//  Suspend / resume for "drive the car yourself" (vehicle clip recording)
+// ============================================================
+
+static bool s_DriveSuspended = false;
+static bool s_DrivePrevHideHUD = false;
+static bool s_DrivePrevHidePlayer = false;
+
+void FreeCam_SuspendForDrive() {
+  if (!g_FreeCamActive || s_DriveSuspended) return;
+  s_DriveSuspended = true;
+
+  // Hand the view back to the gameplay camera (the free-cam scripted cam is left
+  // alive and untouched, so Resume snaps straight back to the same shot).
+  CAM::SET_CAM_ACTIVE(s_Cam, FALSE);
+  CAM::RENDER_SCRIPT_CAMS(FALSE, FALSE, 0, TRUE, FALSE);
+
+  // Release the player ped so it can actually drive.
+  if (ENTITY::DOES_ENTITY_EXIST(s_FrozenPed)) {
+    ENTITY::FREEZE_ENTITY_POSITION(s_FrozenPed, FALSE);
+    ENTITY::SET_ENTITY_COLLISION(s_FrozenPed, TRUE, TRUE);
+  }
+
+  // Show the player + HUD while driving (restored on resume).
+  s_DrivePrevHideHUD = g_HideHUD;
+  s_DrivePrevHidePlayer = g_HidePlayer;
+  g_HideHUD = false;
+  g_HidePlayer = false;
+}
+
+void FreeCam_ResumeAfterDrive() {
+  if (!s_DriveSuspended) return;
+  s_DriveSuspended = false;
+
+  // Re-freeze the ped to match the free-cam contract (unless player movement is
+  // explicitly allowed), then re-activate the scripted camera at its saved pose.
+  if (!g_EnablePlayerMovement && ENTITY::DOES_ENTITY_EXIST(s_FrozenPed)) {
+    ENTITY::FREEZE_ENTITY_POSITION(s_FrozenPed, TRUE);
+    ENTITY::SET_ENTITY_COLLISION(s_FrozenPed, FALSE, FALSE);
+  }
+  if (s_Cam != 0) {
+    CAM::SET_CAM_ACTIVE(s_Cam, TRUE);
+    CAM::RENDER_SCRIPT_CAMS(TRUE, FALSE, 0, TRUE, FALSE);
+  }
+  g_HideHUD = s_DrivePrevHideHUD;
+  g_HidePlayer = s_DrivePrevHidePlayer;
+}
+
+bool FreeCam_IsSuspended() { return s_DriveSuspended; }
 
 // ============================================================
 //  Info Overlay Drawing
@@ -1543,6 +1675,8 @@ void UpdateFreeCamera() {
     // DoF works again. SET_CAM_USE_SHALLOW_DOF_MODE
     invoke<Void>(0x16A96863A17552BB, s_Cam, FALSE);
   }
+
+  StreamFollowTick(); // keep streaming/LOD on the shot, not the player
 }
 
 // ============================================================
@@ -2021,6 +2155,7 @@ void SequencePushToEngine(float dt) {
   CAM::SET_CAM_ROT(s_Cam, s_Pitch + shakePitchD,
                    g_CamRoll + shakeRollD, s_Yaw + shakeYawD, 2);
   invoke<Void>(0xB13C14F66A00D047, s_Cam, g_CamFOV); // SET_CAM_FOV (real-time)
+  StreamFollowTick(); // keep streaming/LOD on the shot, not the player
 }
 
 // Detach the scripted cam from any entity a locked sequence segment bound it

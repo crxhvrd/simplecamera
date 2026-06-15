@@ -25,16 +25,11 @@ tmp/
 *.unsuccessfulbuild
 *.zip
 
-# External dependencies (optional: if you want them in the repo don't ignore them, 
-# but usually large binary dependencies or submodules are handled differently. 
-# User asked to upload "whole source code with externals", so I'll keep them.)
-
-# Logs
 logs/
 
-# Backup
 backup/
 
-# Release artifacts for gta5mods.com only, not GitHub
 README.txt
 gta5mods.txt
+
+*.json
