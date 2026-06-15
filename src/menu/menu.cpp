@@ -154,6 +154,8 @@ void LoadSettings() {
   g_StreamAroundCamera = IniReadBool("Misc", "StreamAroundCamera", g_StreamAroundCamera, path);
   g_ShowInfoOverlay = IniReadBool("Misc", "ShowInfoOverlay", g_ShowInfoOverlay, path);
   g_DisableVehicleShake = IniReadBool("Misc", "DisableVehicleShake", g_DisableVehicleShake, path);
+  g_ClearVehicles = IniReadBool("Misc", "ClearVehicles", g_ClearVehicles, path);
+  g_ClearPeds = IniReadBool("Misc", "ClearPeds", g_ClearPeds, path);
   g_ShowLockedEntityMarker = IniReadBool("Misc", "ShowLockedEntityMarker", g_ShowLockedEntityMarker, path);
 
   // ---- Appearance: menu look (UI) ----
@@ -184,6 +186,7 @@ void LoadSettings() {
   g_SeqPathR = GetPrivateProfileIntA("Sequence", "PathR", g_SeqPathR, path);
   g_SeqPathG = GetPrivateProfileIntA("Sequence", "PathG", g_SeqPathG, path);
   g_SeqPathB = GetPrivateProfileIntA("Sequence", "PathB", g_SeqPathB, path);
+  g_SeqTimeLabelMode = GetPrivateProfileIntA("Sequence", "TimeLabelMode", g_SeqTimeLabelMode, path);
   g_VehicleClipSampleHz =
       GetPrivateProfileIntA("Sequence", "ClipSampleHz", g_VehicleClipSampleHz, path);
   g_VehicleClipSteerGain =
@@ -265,6 +268,8 @@ void SaveSettings() {
   wb("Misc", "StreamAroundCamera", g_StreamAroundCamera);
   wb("Misc", "ShowInfoOverlay", g_ShowInfoOverlay);
   wb("Misc", "DisableVehicleShake", g_DisableVehicleShake);
+  wb("Misc", "ClearVehicles", g_ClearVehicles);
+  wb("Misc", "ClearPeds", g_ClearPeds);
   wb("Misc", "ShowLockedEntityMarker", g_ShowLockedEntityMarker);
 
   wf("UI", "MenuPosX", g_MenuPosX);
@@ -293,6 +298,7 @@ void SaveSettings() {
   wi("Sequence", "PathR", g_SeqPathR);
   wi("Sequence", "PathG", g_SeqPathG);
   wi("Sequence", "PathB", g_SeqPathB);
+  wi("Sequence", "TimeLabelMode", g_SeqTimeLabelMode);
   wi("Sequence", "ClipSampleHz", g_VehicleClipSampleHz);
   wf("Sequence", "ClipSteerGain", g_VehicleClipSteerGain);
   wi("Sequence", "ClipShowDriver", g_VehicleClipShowDriver ? 1 : 0);
@@ -351,6 +357,8 @@ void ResetSettingsToDefaults() {
   g_StreamAroundCamera = true;
   g_ShowInfoOverlay = false;
   g_DisableVehicleShake = false;
+  g_ClearVehicles = false;
+  g_ClearPeds = false;
   g_ShowLockedEntityMarker = true;
 
   g_MenuPosX = 0.025f;
@@ -371,6 +379,7 @@ void ResetSettingsToDefaults() {
   g_SeqPathR = 100;
   g_SeqPathG = 180;
   g_SeqPathB = 255;
+  g_SeqTimeLabelMode = 2; // "1s"
   g_VehicleClipSampleHz = 30;
   g_VehicleClipSteerGain = 1.0f;
   g_VehicleClipShowDriver = true;

@@ -114,6 +114,10 @@ void main() {
     // Global effects (freeze world, info overlay)
     UpdateGlobalEffects();
 
+    // Keep the map clear of ambient vehicles / peds while those World toggles
+    // are on (deletes existing + suppresses respawns each frame).
+    UpdateWorldPopulation();
+
     // IGCS belongs to Free Camera only — its ReShade screenshot workflow
     // makes no sense when sequence playback owns the camera. In Sequence
     // mode, advertise cameraEnabled=false so any active IGCS session on

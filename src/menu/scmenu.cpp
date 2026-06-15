@@ -334,6 +334,14 @@ static void BuildTree() {
                     "detail / pop-in when filming far from the player. Only "
                     "acts while the player is HIDDEN; unhide the player to film "
                     "your own character and it stays in place.");
+  g_World.AddToggle("Clear Vehicles", &g_ClearVehicles, nullptr,
+                    "Empties the map of traffic and keeps it empty: deletes all "
+                    "ambient vehicles and stops new ones spawning. Spares your "
+                    "own vehicle and any recorded / ghost vehicles.");
+  g_World.AddToggle("Clear Peds", &g_ClearPeds, nullptr,
+                    "Empties the map of pedestrians and keeps it empty: deletes "
+                    "all ambient peds and stops new ones spawning. Spares you and "
+                    "any recorded ghost's driver.");
   g_World.AddToggle("Disable Vehicle Shake", &g_DisableVehicleShake, nullptr,
                     "Removes the engine-induced body jitter vehicles have while idling "
                     "and driving, so cars sit dead still for clean shots.");
@@ -482,6 +490,10 @@ static void BuildTree() {
   g_ApMarkers.AddInt("Path Red", &g_SeqPathR, 0, 255, 5, nullptr, "Camera path line red channel.");
   g_ApMarkers.AddInt("Path Green", &g_SeqPathG, 0, 255, 5, nullptr, "Camera path line green channel.");
   g_ApMarkers.AddInt("Path Blue", &g_SeqPathB, 0, 255, 5, nullptr, "Camera path line blue channel.");
+  g_ApMarkers.AddList("Path Timestamps", &g_SeqTimeLabelMode,
+                      {"Off", "0.5s", "1s", "2s", "5s"}, nullptr,
+                      "How often to label time along the camera and vehicle "
+                      "paths in the world. Off hides the labels.");
 }
 
 // ============================================================
@@ -708,6 +720,14 @@ static void RebuildEventList() {
 static void RebuildSeqList() {
   int sel = g_SeqList.selected, scroll = g_SeqList.scrollOffset;
   g_SeqList.items.clear();
+  g_SeqList.AddButton("Teleport to Sequence", [] {
+    if (Sequence_TeleportToStart())
+      SetStatusText("Camera moved to first keyframe");
+    else
+      SetStatusText("No keyframes in this sequence");
+  }, "Jump the flycam to this sequence's first keyframe so you don't have to fly "
+     "across the map. With Stream Around Camera on, the area's LODs stream in "
+     "around the new position.");
   g_SeqList.AddButton("New Sequence", [] {
     Sequence_New("Untitled");
     SetStatusText("New sequence created");

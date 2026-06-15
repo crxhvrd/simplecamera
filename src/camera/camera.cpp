@@ -133,6 +133,8 @@ bool g_RenderActive = false;    // true while ProcessRenderToImages owns the tim
                                 // two don't fight over SET_TIME_SCALE.
 bool g_ShowInfoOverlay = false;
 bool g_ShowLockedEntityMarker = true;
+bool g_ClearVehicles = false; // World & Scene: keep the map clear of ambient vehicles
+bool g_ClearPeds = false;     // World & Scene: keep the map clear of ambient peds
 
 // ============================================================
 //  Functions
@@ -516,6 +518,27 @@ void SnapCameraToPlayer() {
   s_PosX = p.x;
   s_PosY = p.y;
   s_PosZ = p.z + 2.0f;
+  // Don't let the big position jump spike the speed-coupled shake for a frame.
+  s_HasPrevPos = false;
+}
+
+// Place the flycam at an explicit world pose. Used by "Teleport to Sequence" to
+// jump straight to a sequence's first keyframe instead of flying across the map.
+// Sets position, orientation and FOV; the quaternion (acrobatic) engine matrix
+// is reseated so a roll-through-zenith session continues cleanly from here.
+void FreeCam_SetPose(float x, float y, float z, float pitch, float yaw,
+                     float roll, float fov) {
+  if (!g_FreeCamActive)
+    return;
+  s_PosX = x;
+  s_PosY = y;
+  s_PosZ = z;
+  s_Pitch = pitch;
+  s_Yaw = yaw;
+  g_CamRoll = roll;
+  if (fov > 1.0f && fov < 130.0f)
+    g_CamFOV = fov;
+  s_AcroMatrix = EulerToQuat(s_Pitch, s_Yaw, g_CamRoll);
   // Don't let the big position jump spike the speed-coupled shake for a frame.
   s_HasPrevPos = false;
 }
@@ -1860,6 +1883,69 @@ void UpdateTimeWeather() {
 // ============================================================
 //  Global Effects (run every frame regardless of freecam)
 // ============================================================
+
+// World & Scene: when "Clear Vehicles" / "Clear Peds" are on, keep the map empty
+// of ambient traffic and pedestrians — both by zeroing the spawn density every
+// frame (so nothing new appears) AND by deleting whatever already exists. Always
+// spared: the player ped, the player's vehicle (current or last), the free-cam
+// follow target, and any tool-owned entity (recorded clip, replay ghost, or a
+// ghost's driver). Other players (IS_PED_A_PLAYER) are never touched.
+void UpdateWorldPopulation() {
+  // The density multipliers below are THIS_FRAME (they auto-reset every frame),
+  // but the population BUDGET is sticky — left at 0 it permanently blocks new
+  // spawns even after the toggle is switched off. Edge-detect the off-transition
+  // and restore the game's normal full budget (3) once so traffic/peds return.
+  static bool prevVeh = false, prevPed = false;
+  if (prevVeh && !g_ClearVehicles) STREAMING::SET_VEHICLE_POPULATION_BUDGET(3);
+  if (prevPed && !g_ClearPeds) STREAMING::SET_PED_POPULATION_BUDGET(3);
+  prevVeh = g_ClearVehicles;
+  prevPed = g_ClearPeds;
+
+  if (!g_ClearVehicles && !g_ClearPeds) return;
+
+  const Ped player = PLAYER::PLAYER_PED_ID();
+
+  if (g_ClearVehicles) {
+    VEHICLE::SET_VEHICLE_DENSITY_MULTIPLIER_THIS_FRAME(0.0f);
+    VEHICLE::SET_RANDOM_VEHICLE_DENSITY_MULTIPLIER_THIS_FRAME(0.0f);
+    VEHICLE::SET_PARKED_VEHICLE_DENSITY_MULTIPLIER_THIS_FRAME(0.0f);
+    STREAMING::SET_VEHICLE_POPULATION_BUDGET(0);
+
+    Vehicle keep = PED::GET_VEHICLE_PED_IS_IN(player, FALSE);
+    if (keep == 0) keep = PED::GET_VEHICLE_PED_IS_IN(player, TRUE); // last car on foot
+
+    int veh[1024];
+    int n = worldGetAllVehicles(veh, 1024);
+    for (int i = 0; i < n; ++i) {
+      Vehicle v = veh[i];
+      if (v == 0 || v == keep) continue;
+      if (g_FollowTargetEntity != 0 && v == g_FollowTargetEntity) continue;
+      if (VehicleClip_OwnsEntity(v)) continue;
+      if (!ENTITY::DOES_ENTITY_EXIST(v)) continue;
+      ENTITY::SET_ENTITY_AS_MISSION_ENTITY(v, TRUE, TRUE);
+      VEHICLE::DELETE_VEHICLE(&v);
+    }
+  }
+
+  if (g_ClearPeds) {
+    PED::SET_PED_DENSITY_MULTIPLIER_THIS_FRAME(0.0f);
+    PED::SET_SCENARIO_PED_DENSITY_MULTIPLIER_THIS_FRAME(0.0f, 0.0f);
+    STREAMING::SET_PED_POPULATION_BUDGET(0);
+
+    int ped[1024];
+    int n = worldGetAllPeds(ped, 1024);
+    for (int i = 0; i < n; ++i) {
+      Ped p = ped[i];
+      if (p == 0 || p == player) continue;
+      if (PED::IS_PED_A_PLAYER(p)) continue; // never delete player peds (MP safety)
+      if (g_FollowTargetEntity != 0 && p == g_FollowTargetEntity) continue;
+      if (VehicleClip_OwnsEntity(p)) continue;
+      if (!ENTITY::DOES_ENTITY_EXIST(p)) continue;
+      ENTITY::SET_ENTITY_AS_MISSION_ENTITY(p, TRUE, TRUE);
+      PED::DELETE_PED(&p);
+    }
+  }
+}
 
 void UpdateGlobalEffects() {
   // Three independent world-speed controls:

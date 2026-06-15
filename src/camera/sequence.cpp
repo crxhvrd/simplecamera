@@ -88,6 +88,17 @@ bool g_SequenceShowMarkers = true;
 // Marker / path appearance (overridable via the Appearance menu + INI).
 int g_SeqMarkerR = 80, g_SeqMarkerG = 200, g_SeqMarkerB = 80;
 float g_SeqMarkerSize = 0.30f;
+
+// Path timestamp interval, shared by the camera-path and vehicle-path time
+// labels. Stored as an index into {Off, 0.5s, 1s, 2s, 5s} (so it maps cleanly to
+// an Appearance list control); SeqTimeLabelStep() turns it into seconds, 0=off.
+int g_SeqTimeLabelMode = 2;
+float SeqTimeLabelStep() {
+  static const float steps[] = {0.0f, 0.5f, 1.0f, 2.0f, 5.0f};
+  int m = g_SeqTimeLabelMode;
+  if (m < 0 || m > 4) m = 2;
+  return steps[m];
+}
 int g_SeqPathR = 100, g_SeqPathG = 180, g_SeqPathB = 255;
 static int s_EditingPoseIdx = -1;
 
@@ -1522,23 +1533,23 @@ static void DrawSequenceMarkers() {
     }
   }
 
-  // Per-second timestamp ticks along the camera path (mirrors the vehicle path).
-  // Auto-spaced to ~20 labels max; skipped where a keyframe already shows its
-  // own time so the two don't overlap.
-  {
+  // Timestamp ticks along the camera path (mirrors the vehicle path). Interval
+  // is the Appearance "Path Timestamps" setting; skipped where a keyframe already
+  // shows its own time so the two don't overlap.
+  float tsStep = SeqTimeLabelStep();
+  if (tsStep > 0.0f) {
     float dur = s->poses[N - 1].t;
-    int tsStep = 1;
-    while (dur / (float)tsStep > 20.0f) ++tsStep;
     int ta = s_Playing ? 110 : 180;
-    for (int sec = tsStep; (float)sec < dur; sec += tsStep) {
+    for (float sec = tsStep; sec < dur; sec += tsStep) {
       bool nearKf = false;
       for (int i = 0; i < N; ++i)
-        if (fabsf(s->poses[i].t - (float)sec) < 0.2f) { nearKf = true; break; }
+        if (fabsf(s->poses[i].t - sec) < 0.2f) { nearKf = true; break; }
       if (nearKf) continue;
       float x, y, z;
-      ComputePosAtTime((float)sec, s, x, y, z);
+      ComputePosAtTime(sec, s, x, y, z);
       char buf[16];
-      sprintf_s(buf, "%ds", sec);
+      if (sec == floorf(sec)) sprintf_s(buf, "%ds", (int)sec);
+      else                    sprintf_s(buf, "%.1fs", sec);
       DrawText3D(x, y, z + 0.15f, buf, g_SeqPathR, g_SeqPathG, g_SeqPathB, ta,
                  0.24f);
       GRAPHICS::DRAW_LINE(x, y, z, x, y, z + 0.12f, g_SeqPathR, g_SeqPathG,
@@ -1589,6 +1600,18 @@ static void DrawSequenceMarkers() {
     GRAPHICS::DRAW_LINE(ex, ey, ez, ex, ey, ez + zOff - 0.1f,
                         r, g, b, a / 2);
   }
+}
+
+bool Sequence_TeleportToStart() {
+  CameraSequence *s = Sequence_Active();
+  if (!s || s->poses.empty()) return false;
+  // Jump the flycam to the first keyframe's stored world pose. (Entity-locked
+  // keyframes use pos*/rot* as their capture-time fallback, which is exactly the
+  // right place to drop the camera.) With Stream Around Camera on, the player
+  // ped then follows the cam here each frame and streams the area's LODs in.
+  const PoseKeyframe &p = s->poses.front();
+  FreeCam_SetPose(p.posX, p.posY, p.posZ, p.pitch, p.yaw, p.roll, p.fov);
+  return true;
 }
 
 void Sequence_FrameTick() {
@@ -1993,6 +2016,12 @@ static void ParseSequenceJson(const char *data, int len, CameraSequence &seq) {
 static void SaveSequenceJson(int idx) {
   if (idx < 0 || idx >= (int)s_Sequences.size()) return;
   const CameraSequence &s = s_Sequences[idx];
+  // Don't persist a completely empty sequence (no keyframes, events or vehicle
+  // clips). Camera Sequence mode opens on a fresh scratch sequence; this stops
+  // that throwaway from littering the folder with an empty file when you switch
+  // away from it. (Every SaveSequenceJson caller saves the sequence whose clips
+  // are loaded in the runtime module, so VehicleClip_Count() matches `s`.)
+  if (s.poses.empty() && s.events.empty() && VehicleClip_Count() == 0) return;
   char path[MAX_PATH];
   GetSeqJsonPath(s.name.c_str(), path, sizeof(path));
   FILE *f = nullptr;
@@ -2046,6 +2075,20 @@ static void MigrateLegacyToJson() {
   LoadActiveSequenceClips();
 }
 
+// Append a fresh, empty sequence and make it the active one (without touching
+// the saved sequences already in the list). Used so Camera Sequence mode always
+// opens on a blank take instead of auto-loading a previous one.
+static void StartFreshActiveSequence() {
+  CameraSequence s;
+  s.name = "Untitled";
+  s.loop = false;
+  s.playbackSpeed = 1.0f;
+  s_Sequences.push_back(s);
+  s_ActiveIdx = (int)s_Sequences.size() - 1;
+  Sequence_Stop();
+  VehicleClip_Clear(); // a fresh sequence has no vehicle clips / ghosts
+}
+
 void Sequence_LoadAll() {
   s_Sequences.clear();
   s_ActiveIdx = -1;
@@ -2081,20 +2124,18 @@ void Sequence_LoadAll() {
     FindClose(h);
   }
 
-  if (!s_Sequences.empty()) {
-    s_ActiveIdx = 0;
-    LoadActiveSequenceClips();
-    return;
+  // If there are no JSON sequences yet, pull in any legacy-INI sequences and
+  // rewrite them as JSON so they show up in the list too.
+  if (s_Sequences.empty()) {
+    LoadAllLegacyIni();
+    if (!s_Sequences.empty()) MigrateLegacyToJson();
   }
 
-  // No JSON yet — migrate from the legacy INI (+ clip sidecars) if present.
-  LoadAllLegacyIni();
-  if (!s_Sequences.empty()) {
-    MigrateLegacyToJson();
-  } else {
-    EnsureActive();
-    VehicleClip_Clear();
-  }
+  // Don't auto-activate a saved sequence. Saved takes stay in the list (pick one
+  // from Select Active when you want it), but Camera Sequence mode always opens
+  // on a fresh, empty sequence — so a previous take's keyframes and vehicle
+  // ghosts never stream in unasked (which was unloading nearby LODs on entry).
+  StartFreshActiveSequence();
 }
 
 void Sequence_SaveAll() {

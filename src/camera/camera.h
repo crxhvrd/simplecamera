@@ -117,6 +117,8 @@ extern bool g_FreezeEntities;  // Freeze All Entities — camera/audio stay live
 extern float g_WorldTimeScale; // slow-motion 0.01..1.0 (1.0 = real time)
 extern bool g_RenderActive;    // true while an image-sequence render owns time scale
 extern bool g_ShowInfoOverlay;
+extern bool g_ClearVehicles; // keep the world empty of ambient vehicles
+extern bool g_ClearPeds;     // keep the world empty of ambient peds
 extern bool g_ShowLockedEntityMarker;
 
 extern bool g_IsFiveM;
@@ -183,9 +185,12 @@ bool FreeCam_IsSuspended();
 
 // Quick camera actions (Misc menu)
 void SnapCameraToPlayer();
+void FreeCam_SetPose(float x, float y, float z, float pitch, float yaw,
+                     float roll, float fov);
 void LevelCameraHorizon();
 void UpdateTimeWeather();
 void UpdateGlobalEffects();
+void UpdateWorldPopulation(); // per-frame: enforce Clear Vehicles / Clear Peds
 void DrawInfoOverlay();
 
 // Native wrappers for compatibility

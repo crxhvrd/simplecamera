@@ -20,6 +20,10 @@
 
 #pragma warning(disable : 4244 4305)
 
+// Defined in sequence.cpp — the shared path-timestamp interval in seconds
+// (0 = off), driven by the Appearance "Path Timestamps" setting.
+float SeqTimeLabelStep();
+
 // Mod slots 0..kModSlots-1 captured for visual replication. Slots 17..22 are
 // toggle mods (turbo / tire smoke / xenon / etc.), the rest are indexed mods.
 static const int kModSlots = 49;
@@ -667,16 +671,23 @@ static void DrawOneClipPath(const VehClip &clip, float currentTime, bool playing
                         0, 0.3f, 0.3f, 0.3f, 220, 60, 60, baseA, FALSE, FALSE, 2,
                         FALSE, NULL, NULL, FALSE);
 
-  // Per-second timestamp labels (only for the primary clip to avoid clutter).
-  if (labelTimes) {
-    int tsStep = 1;
-    while (dur / (float)tsStep > 20.0f) ++tsStep;
+  // Per-second timestamp labels along the path, drawn for every clip (colored to
+  // match it). Labels read SHARED-TIMELINE time — honoring this clip's offset and
+  // speed — so the same number on two vehicles marks the same instant, which is
+  // exactly what you want when syncing layered clips.
+  float tsStep = SeqTimeLabelStep();
+  if (labelTimes && tsStep > 0.0f) {
+    float sp = (clip.st.speed > 0.0001f) ? clip.st.speed : 1.0f;
+    float tlDur = dur / sp; // this clip's length measured on the timeline
     const int la = playing ? 140 : 230;
-    for (int sec = tsStep; (float)sec < dur; sec += tsStep) {
+    for (float sec = tsStep; sec < clip.st.offset + tlDur; sec += tsStep) {
+      float localT = (sec - clip.st.offset) * sp; // timeline sec -> path
+      if (localT < 0.0f || localT > dur) continue;
       float x, y, z;
-      PathPosIn(S, (float)sec, x, y, z);
+      PathPosIn(S, localT, x, y, z);
       char buf[16];
-      sprintf_s(buf, "%ds", sec);
+      if (sec == floorf(sec)) sprintf_s(buf, "%ds", (int)sec);
+      else                    sprintf_s(buf, "%.1fs", sec);
       PathText3D(x, y, z + 0.35f, buf, r, g, b, la, 0.28f);
       GRAPHICS::DRAW_LINE(x, y, z, x, y, z + 0.25f, r, g, b, baseA);
     }
@@ -725,7 +736,7 @@ void VehicleClip_DrawPath(float currentTime, bool playing) {
   for (int i = 0; i < (int)s_clips.size(); ++i) {
     int r, g, b;
     ClipColor(i, r, g, b);
-    DrawOneClipPath(s_clips[i], currentTime, playing, /*labelTimes=*/i == 0, r,
+    DrawOneClipPath(s_clips[i], currentTime, playing, /*labelTimes=*/true, r,
                     g, b);
   }
 }
@@ -1249,4 +1260,12 @@ int VehicleClip_VehicleHandle() {
   for (const VehClip &c : s_clips)
     if (c.ghost != 0 && VehicleValid(c.ghost)) return c.ghost;
   return VehicleValid(s_recVehicle) ? s_recVehicle : 0;
+}
+
+bool VehicleClip_OwnsEntity(int handle) {
+  if (handle == 0) return false;
+  if (s_recVehicle != 0 && handle == s_recVehicle) return true;
+  for (const VehClip &c : s_clips)
+    if (handle == c.ghost || handle == c.driver) return true;
+  return false;
 }

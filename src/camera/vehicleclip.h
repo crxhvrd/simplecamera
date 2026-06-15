@@ -158,3 +158,6 @@ bool  VehicleClip_Enabled();      // replay on/off (independent of having data)
 void  VehicleClip_SetEnabled(bool on);
 
 int   VehicleClip_VehicleHandle(); // recorded vehicle handle (0 if none / gone)
+// True if the handle is an entity this module owns (the recorded vehicle, a
+// replay ghost, or a ghost's driver) — lets World "Clear Vehicles/Peds" spare it.
+bool  VehicleClip_OwnsEntity(int handle);

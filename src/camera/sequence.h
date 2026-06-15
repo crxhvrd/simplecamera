@@ -172,6 +172,10 @@ void Sequence_TogglePlay();
 void Sequence_JumpToNextPose();
 void Sequence_JumpToPrevPose();
 
+// Move the flycam to the active sequence's first keyframe (so you don't have to
+// fly across the map). Returns false if there's no active sequence / no poses.
+bool Sequence_TeleportToStart();
+
 // Capture current camera world pose into a new PoseKeyframe at the
 // current scrub time (or at sequence end if no scrub). Returns the
 // index of the inserted keyframe in the active sequence's pose list.
@@ -295,6 +299,8 @@ extern bool g_SequenceShowMarkers;
 // loop-seam/locked) keep their distinct semantic colors.
 extern int g_SeqMarkerR, g_SeqMarkerG, g_SeqMarkerB; // normal keyframe color
 extern float g_SeqMarkerSize;                         // normal keyframe size
+extern int g_SeqTimeLabelMode; // path timestamp interval (index; see .cpp)
+float SeqTimeLabelStep();       // interval in seconds (0 = labels off)
 extern int g_SeqPathR, g_SeqPathG, g_SeqPathB;        // path line color
 
 // Track which pose keyframe (if any) is currently open in the per-pose
