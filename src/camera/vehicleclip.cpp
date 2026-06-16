@@ -185,27 +185,6 @@ static void ApplyVisualSteer(int veh, float steerBias) {
   VEHICLE::SET_VEHICLE_STEER_BIAS(veh, steerBias);
 }
 
-// TEMP diagnostic: on-screen readout of the FiveM wheel-spin native results, so
-// we can see whether the CFX natives are actually reaching the ghost vehicle.
-// Toggle off / remove once wheel spin is confirmed working under FiveM.
-bool g_VehClipWheelDebug = true;
-static void DrawWheelDebug(int veh, float omega) {
-  if (!g_VehClipWheelDebug || !VehMem::UsesNativeSpin()) return;
-  char buf[160];
-  int nw = VehMem::WheelCount(veh);
-  float back = VehMem::ReadWheelSpinSpeed(veh, 0);
-  bool exists = ENTITY::DOES_ENTITY_EXIST(veh) != 0;
-  sprintf_s(buf, "WHEELDBG veh=%d exist=%d nWheels=%d setOmega=%.1f readback=%.1f",
-            veh, exists ? 1 : 0, nw, omega, back);
-  UI::SET_TEXT_FONT(0);
-  UI::SET_TEXT_SCALE(0.0f, 0.34f);
-  UI::SET_TEXT_COLOUR(0, 255, 120, 255);
-  UI::SET_TEXT_OUTLINE();
-  UI::_SET_TEXT_ENTRY((char *)"STRING");
-  UI::_ADD_TEXT_COMPONENT_STRING((LPSTR)buf);
-  UI::_DRAW_TEXT(0.02f, 0.45f);
-}
-
 // Normalized lerp of two quaternions (shortest arc).
 static void NlerpQuat(const ClipSample &a, const ClipSample &b, float u,
                       float &ox, float &oy, float &oz, float &ow) {
@@ -512,7 +491,6 @@ static void ApplyClipAtTime(VehClip &c, float t, bool animateWheels) {
       omega = fwdSpeed / kWheelRadius;
     }
     VehMem::SetWheelRotationSpeed(veh, omega);
-    DrawWheelDebug(veh, omega); // TEMP — remove once spin confirmed
   } else if (nWheels > 0 && VehMem::Available()) {
     // Memory backend (singleplayer): write the recorded roll angle to each CWheel.
     VehMem::WriteWheelAngles(veh, wheelAng, nWheels);
