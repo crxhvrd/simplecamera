@@ -78,6 +78,10 @@ bool UsesNativeSpin();
 // wheel roll each frame, so a teleported/parked ghost still appears to drive.
 void SetWheelRotationSpeed(int vehicle, float radPerSec);
 
+// Diagnostic: read back a wheel's current spin angular velocity (rad/s). Returns
+// 0 unless the FiveM native backend is active. Used by the on-screen wheel debug.
+float ReadWheelSpinSpeed(int vehicle, int wheel);
+
 // True once the per-wheel STEERING-angle offset has resolved. Steering can be
 // driven by direct memory write (unlike SET_VEHICLE_STEER_BIAS, this works even
 // with a driver ped seated).

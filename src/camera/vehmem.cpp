@@ -28,6 +28,7 @@ namespace {
 // = fatal" rule for the vanilla ScriptHookV path is never hit. See vehmem.h.
 const Hash FM_GET_NUM_WHEELS  = 0xEDF4B0FC; // GET_VEHICLE_NUMBER_OF_WHEELS
 const Hash FM_SET_WHEEL_SPEED = 0x35ED100D; // SET_VEHICLE_WHEEL_ROTATION_SPEED
+const Hash FM_GET_WHEEL_SPEED = 0xEA1859E5; // GET_VEHICLE_WHEEL_ROTATION_SPEED
 // NOTE: SET_VEHICLE_WHEEL_Y_ROTATION (0xC6C2171F) is CAMBER, not wheel spin
 // (it's the VStancer camber native), so it is intentionally NOT used here.
 
@@ -336,9 +337,17 @@ bool UsesNativeSpin() { return g_fivem; }
 
 void SetWheelRotationSpeed(int vehicle, float radPerSec) {
   if (!g_fivem || vehicle == 0) return; // native backend only
-  int n = WheelCount(vehicle);
-  for (int i = 0; i < n; ++i)
+  // Loop a fixed upper bound rather than trusting GET_VEHICLE_NUMBER_OF_WHEELS
+  // (so spin still works even if that native is unreachable / returns 0). The
+  // CFX setter validates the wheel index internally and ignores out-of-range.
+  for (int i = 0; i < kMaxWheels; ++i)
     invoke<Void>(FM_SET_WHEEL_SPEED, vehicle, i, radPerSec);
+}
+
+// Diagnostic read-back of a wheel's current spin speed (FiveM native backend).
+float ReadWheelSpinSpeed(int vehicle, int wheel) {
+  if (!g_fivem || vehicle == 0) return 0.0f;
+  return invoke<float>(FM_GET_WHEEL_SPEED, vehicle, wheel);
 }
 
 } // namespace VehMem
