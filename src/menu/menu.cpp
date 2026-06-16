@@ -662,6 +662,17 @@ void ProcessRenderToImages() {
         if (++safety > 20000) break;      // hard safety net
       }
       if (cancelled) break;
+
+      // Snapshot the playhead the instant we've reached this frame's grid mark.
+      // Everything below (banner + flush + capture samples) runs with playback
+      // STILL LIVE, so each of those frames also advances the playhead. AUTO
+      // must budget that ENTIRE block of work — not just the capture samples —
+      // otherwise the banner/flush overshoot leaks past the grid mark every
+      // frame, the absolute-target catch-up loop above gets skipped, the
+      // overshoot compounds, and the whole sequence plays several times too
+      // fast (camera animation finishing long before the last output frame).
+      float tWorkStart = Sequence_CurrentTime();
+
       // Guarantee a couple of banner frames so progress is always visible вЂ”
       // the advance loop above is skipped when the per-frame blur work has
       // already overshot the grid mark.
@@ -677,9 +688,6 @@ void ProcessRenderToImages() {
 
       char path[MAX_PATH];
       sprintf_s(path, "%s\\frame_%06d.%s", folder, cap, ext);
-
-      // Measure how much game-time the capture work consumes so AUTO can adapt.
-      float tWorkStart = Sequence_CurrentTime();
 
       // Accumulate `syncSamples` consecutive live frames. The world advances a
       // little between each (slowed playback), so the addon's linear average
@@ -699,8 +707,11 @@ void ProcessRenderToImages() {
       }
       if (cancelled) break;
 
-      // AUTO: nudge the time scale so the per-frame work lands inside the
-      // budget. Too much consumed -> slow down (world was overshooting); plenty
+      // AUTO: nudge the time scale so ALL of this frame's post-grid-mark work
+      // (banner + flush + capture samples) lands inside the budget. Keeping it
+      // under stepT means the playhead overshoots the next grid mark by less
+      // than one output step, so the catch-up loop above re-engages every frame
+      // and the playhead can't run away. Too much consumed -> slow down; plenty
       // of headroom -> speed up (don't waste wall-clock). Self-correcting.
       if (autoSlow) {
         float consumed = Sequence_CurrentTime() - tWorkStart;
