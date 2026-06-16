@@ -1,6 +1,15 @@
 /*
         GTA V Free Camera / Photo Mode Plugin
         Vehicle Memory — see vehmem.h for the rationale and offset table.
+
+        Two build flavours share this file:
+          * Default (singleplayer, Enhanced + Legacy): resolves CWheel offsets by
+            AOB-scanning the live game module, then reads/writes wheel fields
+            directly.
+          * BUILD_FIVEM (the FiveM .asi): every byte of the module scan and raw
+            memory access below is compiled OUT — FiveM crashes if a loaded .asi
+            even contains that machinery — and the wheels are driven purely
+            through FiveM's CFX wheel natives.
 */
 
 #include "vehmem.h"
@@ -15,25 +24,33 @@
 namespace {
 
 // FiveM CFX wheel natives (hash = joaat of the registered name). Only ever
-// invoked when g_IsFiveM is true, so the "unknown native = fatal" rule for the
-// vanilla ScriptHookV path is never hit. See vehmem.h for the table.
+// invoked when we've decided we're on the FiveM backend, so the "unknown native
+// = fatal" rule for the vanilla ScriptHookV path is never hit. See vehmem.h.
 const Hash FM_GET_NUM_WHEELS  = 0xEDF4B0FC; // GET_VEHICLE_NUMBER_OF_WHEELS
 const Hash FM_GET_WHEEL_Y_ROT = 0x2EA4AFFE; // GET_VEHICLE_WHEEL_Y_ROTATION
 const Hash FM_SET_WHEEL_Y_ROT = 0xC6C2171F; // SET_VEHICLE_WHEEL_Y_ROTATION
 const Hash FM_SET_WHEEL_SPEED = 0x35ED100D; // SET_VEHICLE_WHEEL_ROTATION_SPEED
 
-// True once Init() decides we're running under FiveM and should use the natives
-// above instead of the AOB-scanned memory offsets.
+// True once Init() decides we should use the natives above instead of memory.
+// In the FiveM build this is the only backend; in the default build it tracks
+// the g_IsFiveM runtime detection.
 bool g_fivem = false;
 
-// ---- Resolved field offsets (0 = unresolved) ----
-int g_wheelsPtrOff = 0; // CVehicle: pointer to CWheel*[] array
-int g_wheelCntOff = 0;  // CVehicle: wheel count
-int g_wheelAngOff = 0;  // CWheel: visible rotation angle (radians)
-int g_wheelVelOff = 0;  // CWheel: rotation angular velocity
-int g_wheelSteerOff = 0; // CWheel: steering angle (radians, signed)
 bool g_initDone = false;
 bool g_ok = false;
+
+#ifndef BUILD_FIVEM
+// ============================================================
+//  Singleplayer-only: AOB module scan + raw CWheel memory access.
+//  None of this is compiled into the FiveM build.
+// ============================================================
+
+// ---- Resolved field offsets (0 = unresolved) ----
+int g_wheelsPtrOff = 0;  // CVehicle: pointer to CWheel*[] array
+int g_wheelCntOff = 0;   // CVehicle: wheel count
+int g_wheelAngOff = 0;   // CWheel: visible rotation angle (radians)
+int g_wheelVelOff = 0;   // CWheel: rotation angular velocity
+int g_wheelSteerOff = 0; // CWheel: steering angle (radians, signed)
 
 // ---- Game module range (the .text section we scan) ----
 const uint8_t *g_scanBase = nullptr;
@@ -114,6 +131,7 @@ int Disp32At(const uint8_t *match, int at) {
   memcpy(&v, match + at, sizeof(v));
   return v;
 }
+#endif // !BUILD_FIVEM
 
 } // namespace
 
@@ -123,9 +141,14 @@ bool Init() {
   if (g_initDone) return g_ok;
   g_initDone = true;
 
-  // FiveM: skip the module pattern scan entirely and route every call through
-  // the CFX wheel natives (see the per-function g_fivem branches). The steering
-  // offset is left unresolved because FiveM has no steer-angle SETTER native, so
+#ifdef BUILD_FIVEM
+  // FiveM build: natives are the only backend. No scan, no memory access.
+  g_fivem = true;
+  return (g_ok = true);
+#else
+  // FiveM (running the singleplayer .asi under FiveM): skip the module pattern
+  // scan and route every call through the CFX wheel natives. The steering offset
+  // is left unresolved because FiveM has no steer-angle SETTER native, so
   // SteerAvailable() reports false and replay uses the steer-bias fallback.
   if (g_IsFiveM) {
     g_fivem = true;
@@ -184,28 +207,16 @@ bool Init() {
 
   g_ok = (g_wheelsPtrOff != 0 && g_wheelCntOff != 0 && g_wheelAngOff != 0);
   return g_ok;
+#endif // BUILD_FIVEM
 }
 
 bool Available() { return g_ok; }
 
+#ifndef BUILD_FIVEM
 // Returns the CVehicle base, or nullptr if memory access isn't ready.
 static uint8_t *VehBase(int vehicle) {
   if (!g_ok || vehicle == 0) return nullptr;
   return reinterpret_cast<uint8_t *>(getScriptHandleBaseAddress(vehicle));
-}
-
-int WheelCount(int vehicle) {
-  if (vehicle == 0) return 0;
-  if (g_fivem) {
-    int n = invoke<int>(FM_GET_NUM_WHEELS, vehicle);
-    if (n < 0 || n > kMaxWheels) return 0;
-    return n;
-  }
-  uint8_t *base = VehBase(vehicle);
-  if (!base) return 0;
-  int n = *reinterpret_cast<uint8_t *>(base + g_wheelCntOff); // stored as a byte
-  if (n < 0 || n > kMaxWheels) return 0; // sanity guard against a bad offset
-  return n;
 }
 
 // Resolve the CWheel* for wheel `i`, or nullptr. Validates the array pointer.
@@ -214,6 +225,25 @@ static uint8_t *WheelPtr(uint8_t *base, int i) {
   if (arr == 0) return nullptr;
   uint64_t w = *reinterpret_cast<uint64_t *>(arr + (uint64_t)i * 8);
   return reinterpret_cast<uint8_t *>(w);
+}
+#endif // !BUILD_FIVEM
+
+int WheelCount(int vehicle) {
+  if (vehicle == 0) return 0;
+  if (g_fivem) {
+    int n = invoke<int>(FM_GET_NUM_WHEELS, vehicle);
+    if (n < 0 || n > kMaxWheels) return 0;
+    return n;
+  }
+#ifndef BUILD_FIVEM
+  uint8_t *base = VehBase(vehicle);
+  if (!base) return 0;
+  int n = *reinterpret_cast<uint8_t *>(base + g_wheelCntOff); // stored as a byte
+  if (n < 0 || n > kMaxWheels) return 0; // sanity guard against a bad offset
+  return n;
+#else
+  return 0; // unreachable in the FiveM build (g_fivem is always true)
+#endif
 }
 
 int ReadWheelAngles(int vehicle, float *out, int maxCount) {
@@ -224,6 +254,7 @@ int ReadWheelAngles(int vehicle, float *out, int maxCount) {
       out[i] = invoke<float>(FM_GET_WHEEL_Y_ROT, vehicle, i);
     return n;
   }
+#ifndef BUILD_FIVEM
   uint8_t *base = VehBase(vehicle);
   if (!base) return 0;
   int n = WheelCount(vehicle);
@@ -235,11 +266,21 @@ int ReadWheelAngles(int vehicle, float *out, int maxCount) {
     ++read;
   }
   return read;
+#else
+  return 0; // unreachable in the FiveM build
+#endif
 }
 
-bool SteerAvailable() { return g_ok && g_wheelSteerOff != 0; }
+bool SteerAvailable() {
+#ifdef BUILD_FIVEM
+  return false; // FiveM exposes only a steering-angle GETTER, no setter
+#else
+  return g_ok && g_wheelSteerOff != 0;
+#endif
+}
 
 int ReadWheelSteer(int vehicle, float *out, int maxCount) {
+#ifndef BUILD_FIVEM
   uint8_t *base = VehBase(vehicle);
   if (!base || g_wheelSteerOff == 0) return 0;
   int n = WheelCount(vehicle);
@@ -249,9 +290,14 @@ int ReadWheelSteer(int vehicle, float *out, int maxCount) {
     out[i] = w ? *reinterpret_cast<float *>(w + g_wheelSteerOff) : 0.0f;
   }
   return n;
+#else
+  (void)vehicle; (void)out; (void)maxCount;
+  return 0; // no steer backend under FiveM (SteerAvailable() == false)
+#endif
 }
 
 void WriteWheelSteer(int vehicle, const float *angles, int count) {
+#ifndef BUILD_FIVEM
   uint8_t *base = VehBase(vehicle);
   if (!base || g_wheelSteerOff == 0) return;
   int n = WheelCount(vehicle);
@@ -260,6 +306,9 @@ void WriteWheelSteer(int vehicle, const float *angles, int count) {
     uint8_t *w = WheelPtr(base, i);
     if (w) *reinterpret_cast<float *>(w + g_wheelSteerOff) = angles[i];
   }
+#else
+  (void)vehicle; (void)angles; (void)count; // no steer backend under FiveM
+#endif
 }
 
 void WriteWheelAngles(int vehicle, const float *angles, int count) {
@@ -275,6 +324,7 @@ void WriteWheelAngles(int vehicle, const float *angles, int count) {
     }
     return;
   }
+#ifndef BUILD_FIVEM
   uint8_t *base = VehBase(vehicle);
   if (!base) return;
   int n = WheelCount(vehicle);
@@ -285,6 +335,7 @@ void WriteWheelAngles(int vehicle, const float *angles, int count) {
     *reinterpret_cast<float *>(w + g_wheelAngOff) = angles[i];
     if (g_wheelVelOff) *reinterpret_cast<float *>(w + g_wheelVelOff) = 0.0f;
   }
+#endif
 }
 
 } // namespace VehMem
