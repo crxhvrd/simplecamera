@@ -182,6 +182,11 @@ static float QuatYawDeg(float qx, float qy, float qz, float qw) {
 
 static void ApplyVisualSteer(int veh, float steerBias) {
   if (steerBias < -1.0f) steerBias = -1.0f; else if (steerBias > 1.0f) steerBias = 1.0f;
+  // STEER_UNLOCK_BIAS lets the value we set HOLD instead of the game snapping the
+  // front wheels back to centre — without it SET_VEHICLE_STEER_BIAS is invisible
+  // on a driverless ghost. Both are ScriptHookV SDK natives (no CFX extra), so
+  // this works under FiveM where the per-wheel steer memory write isn't available.
+  VEHICLE::STEER_UNLOCK_BIAS(veh, TRUE);
   VEHICLE::SET_VEHICLE_STEER_BIAS(veh, steerBias);
 }
 
