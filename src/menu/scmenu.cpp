@@ -412,9 +412,6 @@ static void BuildTree() {
                       "How the AI drives - cautious, normal, or rushed/aggressive.");
 
   // ---- Misc ----
-  g_Misc.AddToggle("Move Player with Camera", &g_MovePlayerWithCamera, [](bool on) {
-    if (on && g_FollowMode == 1) g_FollowMode = 0;
-  }, "Drag your character along underneath the camera as it flies.");
   g_Misc.AddToggle("Save Position on Exit", &g_RememberCamPosition, nullptr,
                    "Remember the camera's spot so it reopens where you left it.");
   g_Misc.AddToggle("Lock Camera Position", &g_LockCamera, nullptr,

@@ -19,7 +19,6 @@ extern float g_CamFOV;
 extern float g_CamRoll;
 extern float g_RollSpeed;
 extern float g_ZoomSpeed;
-extern bool g_MovePlayerWithCamera;
 extern bool g_LockCamera;
 extern bool g_EnablePlayerMovement;
 extern bool g_CamCollision;

@@ -762,7 +762,9 @@ bool Sequence_IsPlaying() { return s_Playing; }
 
 void Sequence_Play() {
   CameraSequence *s = Sequence_Active();
-  if (!s || s->poses.empty()) return;
+  // Allow playback with no camera keyframes as long as there are recorded
+  // vehicles to replay (the camera just stays in free-fly).
+  if (!s || (s->poses.empty() && !VehicleClip_HasData())) return;
   if (s_PlaybackTime >= Sequence_TotalDuration())
     s_PlaybackTime = 0.0f;
 
@@ -786,7 +788,7 @@ void Sequence_Play() {
   // suppresses shake on this initial push; the first real Sequence_Tick
   // call will start animating shake with the actual frame delta.
   ApplyPoseAtTime(s_PlaybackTime, s);
-  SequencePushToEngine(0.0f);
+  if (!s->poses.empty()) SequencePushToEngine(0.0f); // own the camera only with keyframes
 
   s_LastTickTime = s_PlaybackTime;
   s_FirstPlayTick = true;
@@ -953,14 +955,21 @@ int Sequence_CapturePoseAtCurrentTime() {
   bool hasPoses = !s->poses.empty();
   for (const auto &p : s->poses) if (p.t > lastT) lastT = p.t;
 
-  // Append vs insert. If the playhead is at/after the end, this is an ENDING
-  // keyframe: place it a fixed 2s after the last one so the timeline grows by 2s
-  // (and the playhead then sits exactly on the new end — valid, so it can't be
-  // clamped back to the old duration the way a "+2 past the end" advance was).
-  // Otherwise it's an INSERT between existing keyframes: place it at the playhead
-  // and add no time.
+  // Where does the new keyframe land in time?
+  //
+  // If a vehicle clip already defines the timeline length, drop the keyframe
+  // exactly at the playhead — you scrub along the pre-recorded action and place
+  // camera poses onto that existing timeline, and we never auto-extend past the
+  // vehicle (so an "ending" keyframe doesn't tack on a spurious 2s).
+  //
+  // Otherwise the timeline is built purely from keyframes: an ENDING keyframe
+  // (playhead at/after the end) is placed a fixed 2s after the last one so the
+  // timeline grows by 2s and the playhead lands exactly on the new end (a valid
+  // scrub position that can't be clamped back). An INSERT between existing
+  // keyframes is placed at the playhead, adding no time.
+  bool vehDrivesTimeline = VehicleClip_Duration() > 0.01f;
   bool isAppend = !hasPoses || s_PlaybackTime >= lastT - 0.01f;
-  if (isAppend && hasPoses)
+  if (!vehDrivesTimeline && isAppend && hasPoses)
     k.t = lastT + 2.0f;
   else
     k.t = s_PlaybackTime;
@@ -1006,12 +1015,16 @@ int Sequence_CapturePoseAtCurrentTime() {
 // ============================================================
 
 static void ApplyPoseAtTime(float t, const CameraSequence *s) {
-  if (!s || s->poses.empty()) return;
+  if (!s) return;
 
-  // Position the recorded vehicle (if any) at this timeline instant FIRST, so
+  // Position the recorded vehicle(s) at this timeline instant FIRST, so
   // entity-locked keyframes below resolve against the subject's correct pose.
+  // This runs before the no-keyframes check below, so recorded vehicles can be
+  // played back on their own (the camera just stays in free-fly).
   // animateWheels while playing/rendering; held still on a plain scrub.
   VehicleClip_ApplyAtTime(t, s_Playing);
+
+  if (s->poses.empty()) return; // vehicle-only playback — no camera pose to drive
 
   // Single pose: just hold it
   if (s->poses.size() == 1) {
@@ -1639,15 +1652,21 @@ void Sequence_FrameTick() {
   }
   s_PrevTickPlaying = s_Playing;
 
+  // The sequence only drives the camera when it's playing AND has keyframes.
+  // With no keyframes (vehicle-only playback) the camera is left in free-fly.
+  CameraSequence *sFt = Sequence_Active();
+  bool cameraDriven = s_Playing && sFt && !sFt->poses.empty();
+
   // Hold the recorded vehicle on its current scrub pose while authoring (not
   // playing), so it stays put where the playhead is as you fly around to frame
-  // a keyframe. Velocity off — it's parked, not driving.
+  // a keyframe. Velocity off — it's parked, not driving. (While playing, the
+  // tick above drives the vehicles instead.)
   if (!s_Playing) VehicleClip_ApplyAtTime(s_PlaybackTime, false);
 
-  // Free-fly authoring: when playback is OFF, let the user fly the camera
-  // around with WASD/etc. to compose the next keyframe. UpdateFreeCamera
-  // owns input + collision + IGCS + shake handling.
-  if (!s_Playing && g_FreeCamActive) {
+  // Free-fly the camera whenever the sequence isn't driving it — that's both
+  // authoring (not playing) AND vehicle-only playback (playing, no keyframes).
+  // UpdateFreeCamera owns input + collision + IGCS + shake handling.
+  if (!cameraDriven && g_FreeCamActive) {
     UpdateFreeCamera();
   }
 }
@@ -1667,7 +1686,11 @@ void Sequence_Tick(float dt) {
   // by Sequence_SetCurrentTime, not every frame.
   if (s_Playing) {
     CameraSequence *s = Sequence_Active();
-    if (!s || s->poses.empty()) {
+    bool hasPoses = s && !s->poses.empty();
+    // Keep playing as long as there's something on the timeline: camera
+    // keyframes OR recorded vehicles. With vehicles only, the camera is left in
+    // free-fly and just the clips replay.
+    if (!s || (!hasPoses && !VehicleClip_HasData())) {
       Sequence_Stop();
       return;
     }
@@ -1694,7 +1717,7 @@ void Sequence_Tick(float dt) {
     ApplyPoseAtTime(s_PlaybackTime, s);
     DriveEvents(s, s_LastTickTime, s_PlaybackTime, firstTick || wrapped);
     s_LastTickTime = s_PlaybackTime;
-    SequencePushToEngine(dt);
+    if (hasPoses) SequencePushToEngine(dt); // own the camera only with keyframes
   }
 
   // Always draw keyframe markers + path preview while in Sequence mode

@@ -149,7 +149,6 @@ void LoadSettings() {
   // ---- Misc ----
   g_HideHUD = IniReadBool("Misc", "HideHUD", g_HideHUD, path);
   g_HidePlayer = IniReadBool("Misc", "HidePlayer", g_HidePlayer, path);
-  g_MovePlayerWithCamera = IniReadBool("Misc", "MovePlayerWithCamera", g_MovePlayerWithCamera, path);
   g_RememberCamPosition = IniReadBool("Misc", "RememberCamPosition", g_RememberCamPosition, path);
   g_StreamAroundCamera = IniReadBool("Misc", "StreamAroundCamera", g_StreamAroundCamera, path);
   g_ShowInfoOverlay = IniReadBool("Misc", "ShowInfoOverlay", g_ShowInfoOverlay, path);
@@ -263,7 +262,6 @@ void SaveSettings() {
 
   wb("Misc", "HideHUD", g_HideHUD);
   wb("Misc", "HidePlayer", g_HidePlayer);
-  wb("Misc", "MovePlayerWithCamera", g_MovePlayerWithCamera);
   wb("Misc", "RememberCamPosition", g_RememberCamPosition);
   wb("Misc", "StreamAroundCamera", g_StreamAroundCamera);
   wb("Misc", "ShowInfoOverlay", g_ShowInfoOverlay);
@@ -352,7 +350,6 @@ void ResetSettingsToDefaults() {
   g_DoFMaxNearInFocus = 0.5f;
   g_DoFMaxFarInFocus = 5.0f;
 
-  g_MovePlayerWithCamera = false;
   g_RememberCamPosition = false;
   g_StreamAroundCamera = true;
   g_ShowInfoOverlay = false;

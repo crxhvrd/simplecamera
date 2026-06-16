@@ -47,7 +47,6 @@ float g_CamFOV = 50.0f;
 float g_CamRoll = 0.0f;
 float g_RollSpeed = 1.0f;
 float g_ZoomSpeed = 1.0f;
-bool g_MovePlayerWithCamera = false;
 bool g_LockCamera = false;
 bool g_EnablePlayerMovement = false;
 bool g_CamCollision = false;
@@ -1479,11 +1478,6 @@ void UpdateFreeCamera() {
       }
     }
 
-    if (g_MovePlayerWithCamera && ENTITY::DOES_ENTITY_EXIST(s_FrozenPed)) {
-      ENTITY::SET_ENTITY_COORDS_NO_OFFSET(s_FrozenPed, s_PosX, s_PosY, s_PosZ,
-                                          FALSE, FALSE, FALSE);
-    }
-
   } // end IGCS session guard
 
   // Check if the script updated s_PosX/Y/Z manually and sync the attachment
@@ -1986,11 +1980,12 @@ void UpdateGlobalEffects() {
   }
 
   // --- Slow motion ---
-  // Applies in any active camera mode (Free Camera or Sequence). Skipped during
-  // a render so the renderer's capture time scale isn't overwritten; the render
-  // restores real-time itself, and this re-asserts the slider once it finishes.
-  if (!g_FreezeWorld && g_FreeCamActive && !g_RenderActive &&
-      g_WorldTimeScale < 0.999f) {
+  // Applies whenever the slider is below 1.0 — in any camera mode AND in normal
+  // gameplay (no camera active), so it's a global world-speed control. Skipped
+  // during a render so the renderer's capture time scale isn't overwritten; the
+  // render restores real-time itself, and this re-asserts the slider once it
+  // finishes. Restored to 1.0 exactly once when the slider returns to full.
+  if (!g_FreezeWorld && !g_RenderActive && g_WorldTimeScale < 0.999f) {
     GAMEPLAY::SET_TIME_SCALE(g_WorldTimeScale);
     s_SlowMoApplied = true;
   } else if (s_SlowMoApplied) {

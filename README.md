@@ -1,14 +1,11 @@
 # Simple Camera — Free Cam & Cinematic Photo Mode for GTA V
 
-A lightweight but deep free-camera and photo-mode plugin for Grand Theft Auto V,
-built on ScriptHookV. Detach the camera from your character and fly anywhere in
-6 degrees of freedom, then dial in the shot with depth of field, procedural
-camera shake, time-of-day and weather control, slow motion, and a world freeze.
+A free-camera and photo-mode plugin for Grand Theft Auto V, built on ScriptHookV.
+Detach the camera from your character and fly anywhere to frame screenshots and
+cinematic shots.
 
-When you want motion instead of a still, switch to **Camera Sequence** mode and
-author a keyframed camera move with smooth spline paths, easing, and a timeline
-of effect automation — then play it back live or render it out to a lossless
-image sequence for video editing.
+For motion, switch to **Camera Sequence** mode to author smooth keyframed camera
+moves, then play them back live or render them out to an image sequence for video.
 
 Works in **Story Mode** and is **FiveM-aware** (time/weather use the correct
 network natives when running under FiveM).
@@ -23,8 +20,6 @@ network natives when running under FiveM).
 - [Quick Start](#quick-start)
 - [Controls](#controls)
 - [The Menu](#the-menu)
-  - [Free Camera](#free-camera-menu)
-  - [Camera Sequence](#camera-sequence-menu)
 - [Workflows](#workflows)
   - [A. Photo Mode — capturing a still](#a-photo-mode--capturing-a-still)
   - [B. Following / filming a moving subject](#b-following--filming-a-moving-subject)
@@ -43,60 +38,20 @@ network natives when running under FiveM).
 
 ## Features
 
-**Free Camera**
+- **Free Camera** — 6-DOF flight (keyboard / mouse / controller) with Euler or
+  Quaternion "Acrobatic" rotation, a momentum-based **Drone** mode, **Walk** mode,
+  optional collision, **Follow / Entity Lock**, and **Auto Drive** for filming a
+  self-driving car.
+- **Photo & scene control** — depth of field, procedural camera shake, time-of-day
+  and weather, slow motion and world freeze, and HUD / player hiding.
+- **Camera Sequence** — keyframed camera moves with easing and spline paths, an
+  effect-event track, entity lock, **multi-vehicle recording** synced to the
+  timeline, and offline **render to an image sequence** with motion blur.
+- **Quality of life** — full controller support, INI-persisted settings, and
+  sequences that save and reload automatically.
 
-- True 6-DOF free flight with smooth keyboard, mouse, and controller input.
-- **Two rotation engines:** standard Euler (gimbal-limited, stays level) or a
-  **Quaternion "Acrobatic"** engine for unlimited pitch/roll with no gimbal lock.
-- **Drone mode** — momentum-based flight with drag, acceleration, gravity, and
-  automatic banking into turns for a natural FPV-drone feel.
-- **Walk mode** — terrain-follows the ground at a fixed eye height.
-- **World collision** so the camera doesn't clip through geometry (optional).
-- **Lock altitude** to keep a constant height while you fly horizontally.
-- **Speed boost** (Shift) and **precision/slow** (Alt) movement modifiers.
-- **Follow / Entity Lock** — make the camera ride along with the player or any
-  aimed-at vehicle/ped, optionally tracking its rotation (rigid mode).
-- **Auto Drive** — let the AI drive your current car to the map waypoint or
-  wander the roads, turning it into a self-driving subject you can orbit and
-  film hands-free. Adjustable speed and driving style. Lives under **World &
-  Scene**, so it works in both Free Camera and Camera Sequence modes.
-- Adjustable speed, look sensitivity, zoom speed, roll speed, and FOV.
-
-**Photo / Scene control**
-
-- **Depth of Field** with manual focus distance or raycast **auto-focus**, plus
-  near/far focus-range control.
-- **Procedural camera shake** — presets (Subtle, Handheld, Vehicle, Earthquake)
-  or fully custom amplitude/frequency, with speed-coupling so the shake reacts
-  to how fast the camera is moving.
-- **Time of day** control + pause, with a **time-lapse** mode.
-- **Weather** selection and two-weather **blending**.
-- **Pause Game**, **Freeze All Entities** (camera stays live), and **Slow
-  Motion** for the world while the camera flies at full speed.
-- **Hide HUD**, **hide the player character**, on-screen info overlay.
-
-**Camera Sequence (cinematics)**
-
-- **Vehicle recording** — record one or more vehicles driving and replay them in
-  sync with the camera timeline, so the camera lines up with the action
-  frame-for-frame. Each recorded vehicle has its own settings (playback speed,
-  start timing, lights, driver, and more).
-- Keyframe the camera over a timeline (position, rotation, FOV).
-- Per-keyframe **easing** (Linear, Ease-In, Ease-Out, Ease-In-Out, Hold) and
-  **path type** (straight Linear or smooth **Catmull-Rom spline**).
-- **Effect-event track** — schedule shake and world-speed changes along the
-  timeline, with optional ramping between events.
-- **Entity lock** — anchor keyframes to a moving vehicle/ped so the shot rides
-  along lag-free.
-- **Loop closure** for perfectly seamless looping moves.
-- **Render to an image sequence** (PNG/lossless or JPEG) with optional
-  multi-sample **motion blur**, for turning a sequence into a video.
-
-**Quality of life**
-
-- All tunables persist to a plain `SimpleCamera.ini`.
-- Sequences (and their recorded vehicles) save to disk and reload automatically.
-- Full **controller** support (no keyboard needed to drive the menu or camera).
+Every option has an in-game tooltip explaining what it does, so the menu is
+self-documenting — this README sticks to setup and the bigger-picture workflows.
 
 ---
 
@@ -196,39 +151,17 @@ Press **F5** to open. The top row, **Camera Mode**, switches between **Off**,
 immediately, and it stays active when you close the menu. Set it to **Off** to
 put the camera away.
 
-### Free Camera menu
+Each submenu is documented by its own in-game tooltips; in brief:
 
-| Submenu | What's inside |
-| --- | --- |
-| **Movement** | Camera speed, look sensitivity, zoom speed, roll speed, **World Collision**, **Lock Altitude**, **Walk Mode** (+ height), **Rotation Style** (Euler / Quaternion "Acrobatic"), **Follow Target** (None / Player / Aimed Entity, with rigid-mode + marker), **Movement Style** (Standard / **Drone** with drag, acceleration, gravity, banking, and smoothing). |
-| **Lens settings** | Field of view (zoom) and roll (lens tilt). |
-| **Depth of field** | Enable, **Auto-Focus**, manual focus distance, near & far focus range. |
-| **Camera effects** | Procedural shake: enable, **preset** (Off / Subtle / Handheld / Vehicle / Earthquake / Custom), base amplitude & frequency, speed→amplitude and speed→frequency coupling, rotation/position weighting, **Stop When Still**, **Randomize Pattern**. |
-| **World & scene** | **Time & Weather** (pause time, time of day, time-lapse, primary/secondary weather + blend), **Auto Drive** (see below), **Pause Game**, **Freeze All Entities**, **Slow Motion**, hide HUD, hide player, disable vehicle shake, info overlay. |
-| **Misc settings** | Move player with camera, save position on exit, lock camera position, allow player to move, snap camera to player, level horizon, save settings to INI, reset to defaults. |
+- **Free Camera** — *Movement* (speed, rotation style, drone / walk, follow
+  target), *Lens*, *Depth of Field*, *Camera Effects* (shake), *World & Scene*,
+  and *Misc*.
+- **Camera Sequence** — playback controls, *Pose Keyframes*, *Effect Events*,
+  *Vehicle Clip* recording, *Follow & Entity Lock*, *Sequences*, and *Render to
+  Images*.
 
-> To leave Free Camera, set the top **Camera Mode** row to **Off**.
-
-### Camera Sequence menu
-
-| Row | What it does |
-| --- | --- |
-| **Sequence / New** | Create and cycle between named sequences. |
-| **Play / Pause**, **Stop** | Drive playback. |
-| **Loop** | Off / On — shows whether the loop seam is *closed* (seamless) or *open* (jumpy). |
-| **Speed** | Playback speed multiplier. |
-| **Time** | Scrub to a position on the timeline. |
-| **Pose Keyframes…** | List/add/edit/delete keyframes; per-pose easing & path type. |
-| **Effect Events…** | Schedule shake / world-speed changes along the timeline. |
-| **Capture Current Pose** | Snapshot the live camera into a new keyframe (**F6**). |
-| **Close Loop** | Append/snap a closing keyframe for a seamless loop (shows the gap). |
-| **Follow & Entity Lock…** | Bulk-anchor keyframes to a moving entity, or clear locks. |
-| **Show Markers** | Toggle the in-world keyframe spheres + path preview (turn off when recording). |
-| **World & Scene…** | Same scene controls as Free Camera. |
-| **Render to Images…** | Offline image-sequence renderer (see below). |
-
-> To leave Camera Sequence, set the top **Camera Mode** row to **Off** (or
-> straight to **Free Camera**). The mode stays active when the menu is closed.
+> To leave either mode, set the top **Camera Mode** row to **Off** (Camera
+> Sequence can also switch straight to **Free Camera**).
 
 ### Auto Drive
 

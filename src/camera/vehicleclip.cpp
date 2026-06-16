@@ -550,6 +550,18 @@ void VehicleClip_StopRecording() {
     c.hasSteer = s_recHasSteer;
     s_clips.push_back(c);
   }
+
+  // Put the player's car (and the player in it) back at the START of the path
+  // they just drove — so it's out of the middle of the scene and lined up with
+  // where the ghost replays from, ready to layer another take or watch it back.
+  if (!s_recSamples.empty() && VehicleValid(s_recVehicle)) {
+    const ClipSample &s0 = s_recSamples.front();
+    ENTITY::SET_ENTITY_COORDS_NO_OFFSET(s_recVehicle, s0.px, s0.py, s0.pz, FALSE,
+                                        FALSE, FALSE);
+    ENTITY::SET_ENTITY_QUATERNION(s_recVehicle, s0.qx, s0.qy, s0.qz, s0.qw);
+    ENTITY::SET_ENTITY_VELOCITY(s_recVehicle, 0.0f, 0.0f, 0.0f);
+  }
+
   s_recSamples.clear();
   FreeCam_ResumeAfterDrive();
 }
