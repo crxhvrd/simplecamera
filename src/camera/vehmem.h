@@ -63,7 +63,20 @@ int ReadWheelAngles(int vehicle, float *out, int maxCount);
 // Write a rotation angle (radians) to each wheel and zero its angular velocity
 // so the sim won't keep advancing the value between our per-frame writes.
 // `count` should match the vehicle's wheel count (clamped internally).
+// (Memory backend only — FiveM has no "set absolute wheel angle" native, so this
+// is a no-op there; use SetWheelRotationSpeed instead.)
 void WriteWheelAngles(int vehicle, const float *angles, int count);
+
+// True when wheel spin must be reproduced via angular VELOCITY rather than an
+// absolute angle — i.e. the FiveM native backend. FiveM's only spin lever is
+// SET_VEHICLE_WHEEL_ROTATION_SPEED (SET_VEHICLE_WHEEL_Y_ROTATION is camber, not
+// roll), so replay forces each wheel's rotation speed every frame instead.
+bool UsesNativeSpin();
+
+// Force every wheel's spin angular velocity (radians/sec). No-op unless the
+// FiveM native backend is active. The game integrates this into the visible
+// wheel roll each frame, so a teleported/parked ghost still appears to drive.
+void SetWheelRotationSpeed(int vehicle, float radPerSec);
 
 // True once the per-wheel STEERING-angle offset has resolved. Steering can be
 // driven by direct memory write (unlike SET_VEHICLE_STEER_BIAS, this works even

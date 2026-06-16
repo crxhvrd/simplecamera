@@ -27,9 +27,9 @@ namespace {
 // invoked when we've decided we're on the FiveM backend, so the "unknown native
 // = fatal" rule for the vanilla ScriptHookV path is never hit. See vehmem.h.
 const Hash FM_GET_NUM_WHEELS  = 0xEDF4B0FC; // GET_VEHICLE_NUMBER_OF_WHEELS
-const Hash FM_GET_WHEEL_Y_ROT = 0x2EA4AFFE; // GET_VEHICLE_WHEEL_Y_ROTATION
-const Hash FM_SET_WHEEL_Y_ROT = 0xC6C2171F; // SET_VEHICLE_WHEEL_Y_ROTATION
 const Hash FM_SET_WHEEL_SPEED = 0x35ED100D; // SET_VEHICLE_WHEEL_ROTATION_SPEED
+// NOTE: SET_VEHICLE_WHEEL_Y_ROTATION (0xC6C2171F) is CAMBER, not wheel spin
+// (it's the VStancer camber native), so it is intentionally NOT used here.
 
 // True once Init() decides we should use the natives above instead of memory.
 // In the FiveM build this is the only backend; in the default build it tracks
@@ -248,11 +248,10 @@ int WheelCount(int vehicle) {
 
 int ReadWheelAngles(int vehicle, float *out, int maxCount) {
   if (g_fivem) {
-    int n = WheelCount(vehicle);
-    if (n > maxCount) n = maxCount;
-    for (int i = 0; i < n; ++i)
-      out[i] = invoke<float>(FM_GET_WHEEL_Y_ROT, vehicle, i);
-    return n;
+    // FiveM reproduces spin from the replayed forward velocity (no absolute
+    // wheel-angle native exists), so per-wheel angle capture is unused — skip it.
+    (void)vehicle; (void)out; (void)maxCount;
+    return 0;
   }
 #ifndef BUILD_FIVEM
   uint8_t *base = VehBase(vehicle);
@@ -313,15 +312,10 @@ void WriteWheelSteer(int vehicle, const float *angles, int count) {
 
 void WriteWheelAngles(int vehicle, const float *angles, int count) {
   if (g_fivem) {
-    int n = WheelCount(vehicle);
-    if (count < n) n = count;
-    for (int i = 0; i < n; ++i) {
-      // Y rotation = the visible spin angle around the axle. Also zero the
-      // rotation speed so the sim doesn't keep advancing the angle between our
-      // per-frame writes (mirrors the memory path's angvel zeroing).
-      invoke<Void>(FM_SET_WHEEL_Y_ROT, vehicle, i, angles[i]);
-      invoke<Void>(FM_SET_WHEEL_SPEED, vehicle, i, 0.0f);
-    }
+    // FiveM has no native to set a wheel's absolute roll angle
+    // (SET_VEHICLE_WHEEL_Y_ROTATION is camber). Spin is reproduced via
+    // SetWheelRotationSpeed instead, so this is a no-op on the native backend.
+    (void)vehicle; (void)angles; (void)count;
     return;
   }
 #ifndef BUILD_FIVEM
@@ -336,6 +330,15 @@ void WriteWheelAngles(int vehicle, const float *angles, int count) {
     if (g_wheelVelOff) *reinterpret_cast<float *>(w + g_wheelVelOff) = 0.0f;
   }
 #endif
+}
+
+bool UsesNativeSpin() { return g_fivem; }
+
+void SetWheelRotationSpeed(int vehicle, float radPerSec) {
+  if (!g_fivem || vehicle == 0) return; // native backend only
+  int n = WheelCount(vehicle);
+  for (int i = 0; i < n; ++i)
+    invoke<Void>(FM_SET_WHEEL_SPEED, vehicle, i, radPerSec);
 }
 
 } // namespace VehMem

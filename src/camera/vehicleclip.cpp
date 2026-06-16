@@ -473,9 +473,28 @@ static void ApplyClipAtTime(VehClip &c, float t, bool animateWheels) {
                               animateWheels ? vy : 0.0f,
                               animateWheels ? vz : 0.0f);
 
-  // Wheel spin: write the recorded rotation angle straight to each CWheel.
-  if (nWheels > 0 && VehMem::Available())
+  // Wheel spin.
+  if (VehMem::UsesNativeSpin()) {
+    // FiveM native backend: there is no native to set an absolute wheel angle
+    // (SET_VEHICLE_WHEEL_Y_ROTATION is camber), so reproduce the roll by forcing
+    // each wheel's angular VELOCITY = forward speed / wheel radius. The game then
+    // integrates that into the visible spin every frame, so even a teleported
+    // ghost looks like it's driving. Gated by animateWheels (0 on a paused scrub).
+    float omega = 0.0f;
+    if (animateWheels) {
+      // Forward (local +Y) axis in world space from the replayed quaternion.
+      float fwx = 2.0f * (qx * qy - qz * qw);
+      float fwy = 1.0f - 2.0f * (qx * qx + qz * qz);
+      float fwz = 2.0f * (qy * qz + qx * qw);
+      float fwdSpeed = vx * fwx + vy * fwy + vz * fwz; // m/s, signed (− = reverse)
+      const float kWheelRadius = 0.34f; // m — visual approximation (avg car tyre)
+      omega = fwdSpeed / kWheelRadius;
+    }
+    VehMem::SetWheelRotationSpeed(veh, omega);
+  } else if (nWheels > 0 && VehMem::Available()) {
+    // Memory backend (singleplayer): write the recorded roll angle to each CWheel.
     VehMem::WriteWheelAngles(veh, wheelAng, nWheels);
+  }
 
   // Steering. Preferred path = write the recorded per-wheel steer angle to
   // memory (works even with a seated driver, which SET_VEHICLE_STEER_BIAS does

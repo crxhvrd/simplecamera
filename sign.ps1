@@ -1,14 +1,14 @@
 <#
-  sign.ps1 — Authenticode-sign the built SimpleCamera .asi files.
+  sign.ps1 - Authenticode-sign the built SimpleCamera .asi files.
 
   Why: Windows (SmartScreen / Smart App Control / Defender) blocks unsigned DLLs
-  that another process — e.g. the FiveM game subprocess — tries to load, with
+  that another process - e.g. the FiveM game subprocess - tries to load, with
   "we can't confirm who published ...". FiveM then reports "Couldn't load X.asi".
   Signing with a certificate the target PC trusts removes that block.
 
   This script:
     1. Reuses (or creates) a self-signed code-signing cert in CurrentUser\My.
-    2. Exports its PUBLIC half to dist\SimpleCamera_CodeSign.cer — install THAT
+    2. Exports its PUBLIC half to dist\SimpleCamera_CodeSign.cer - install THAT
        on the machine that runs FiveM (see dist\INSTALL_FIVEM.md).
     3. Signs the .asi files with SHA256 + an RFC3161 timestamp.
 
@@ -48,7 +48,7 @@ $targets = @(
   (Join-Path $root "bin\Release_FiveM\SimpleCamera_FiveM.asi"),
   (Join-Path $root "bin\Release\SimpleCamera.asi")
 ) | Where-Object { Test-Path $_ }
-if (-not $targets) { throw "No built .asi found — build the solution first." }
+if (-not $targets) { throw "No built .asi found. Build the solution first." }
 
 foreach ($t in $targets) {
   & $signtool sign /sha1 $cert.Thumbprint /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $t
