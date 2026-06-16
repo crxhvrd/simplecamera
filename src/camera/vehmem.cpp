@@ -9,9 +9,22 @@
 #include <cstdint>
 #include <cstring>
 
-#include "main.h" // getScriptHandleBaseAddress (ScriptHookV)
+#include "main.h"   // getScriptHandleBaseAddress (ScriptHookV)
+#include "camera.h" // g_IsFiveM + invoke<> / Hash / Void (ScriptHookV natives)
 
 namespace {
+
+// FiveM CFX wheel natives (hash = joaat of the registered name). Only ever
+// invoked when g_IsFiveM is true, so the "unknown native = fatal" rule for the
+// vanilla ScriptHookV path is never hit. See vehmem.h for the table.
+const Hash FM_GET_NUM_WHEELS  = 0xEDF4B0FC; // GET_VEHICLE_NUMBER_OF_WHEELS
+const Hash FM_GET_WHEEL_Y_ROT = 0x2EA4AFFE; // GET_VEHICLE_WHEEL_Y_ROTATION
+const Hash FM_SET_WHEEL_Y_ROT = 0xC6C2171F; // SET_VEHICLE_WHEEL_Y_ROTATION
+const Hash FM_SET_WHEEL_SPEED = 0x35ED100D; // SET_VEHICLE_WHEEL_ROTATION_SPEED
+
+// True once Init() decides we're running under FiveM and should use the natives
+// above instead of the AOB-scanned memory offsets.
+bool g_fivem = false;
 
 // ---- Resolved field offsets (0 = unresolved) ----
 int g_wheelsPtrOff = 0; // CVehicle: pointer to CWheel*[] array
@@ -110,6 +123,15 @@ bool Init() {
   if (g_initDone) return g_ok;
   g_initDone = true;
 
+  // FiveM: skip the module pattern scan entirely and route every call through
+  // the CFX wheel natives (see the per-function g_fivem branches). The steering
+  // offset is left unresolved because FiveM has no steer-angle SETTER native, so
+  // SteerAvailable() reports false and replay uses the steer-bias fallback.
+  if (g_IsFiveM) {
+    g_fivem = true;
+    return (g_ok = true);
+  }
+
   // Bail on a wholly unidentified build so we never read a bogus offset; the
   // signatures below cover the known Enhanced and Legacy builds.
   if (getGameVersion() == VER_UNK) return (g_ok = false);
@@ -173,6 +195,12 @@ static uint8_t *VehBase(int vehicle) {
 }
 
 int WheelCount(int vehicle) {
+  if (vehicle == 0) return 0;
+  if (g_fivem) {
+    int n = invoke<int>(FM_GET_NUM_WHEELS, vehicle);
+    if (n < 0 || n > kMaxWheels) return 0;
+    return n;
+  }
   uint8_t *base = VehBase(vehicle);
   if (!base) return 0;
   int n = *reinterpret_cast<uint8_t *>(base + g_wheelCntOff); // stored as a byte
@@ -189,6 +217,13 @@ static uint8_t *WheelPtr(uint8_t *base, int i) {
 }
 
 int ReadWheelAngles(int vehicle, float *out, int maxCount) {
+  if (g_fivem) {
+    int n = WheelCount(vehicle);
+    if (n > maxCount) n = maxCount;
+    for (int i = 0; i < n; ++i)
+      out[i] = invoke<float>(FM_GET_WHEEL_Y_ROT, vehicle, i);
+    return n;
+  }
   uint8_t *base = VehBase(vehicle);
   if (!base) return 0;
   int n = WheelCount(vehicle);
@@ -228,6 +263,18 @@ void WriteWheelSteer(int vehicle, const float *angles, int count) {
 }
 
 void WriteWheelAngles(int vehicle, const float *angles, int count) {
+  if (g_fivem) {
+    int n = WheelCount(vehicle);
+    if (count < n) n = count;
+    for (int i = 0; i < n; ++i) {
+      // Y rotation = the visible spin angle around the axle. Also zero the
+      // rotation speed so the sim doesn't keep advancing the angle between our
+      // per-frame writes (mirrors the memory path's angvel zeroing).
+      invoke<Void>(FM_SET_WHEEL_Y_ROT, vehicle, i, angles[i]);
+      invoke<Void>(FM_SET_WHEEL_SPEED, vehicle, i, 0.0f);
+    }
+    return;
+  }
   uint8_t *base = VehBase(vehicle);
   if (!base) return;
   int n = WheelCount(vehicle);

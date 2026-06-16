@@ -16,6 +16,19 @@
         angle/angvel deltas differ. Init() tries each and lets whichever matches
         the running game select the math, so no game-version branching is needed.
 
+        FiveM build: FiveM dislikes raw module pattern scans (its image is managed
+        and getScriptHandleBaseAddress writes are unreliable there), so when we
+        detect FiveM (g_IsFiveM) we skip the scan entirely and drive the wheels
+        through FiveM's CFX wheel natives instead — same public API, different
+        backend. The natives used (hash = joaat of the name):
+          GET_VEHICLE_NUMBER_OF_WHEELS    0xEDF4B0FC  (Vehicle) -> int
+          GET_VEHICLE_WHEEL_Y_ROTATION    0x2EA4AFFE  (Vehicle, wheel) -> float
+          SET_VEHICLE_WHEEL_Y_ROTATION    0xC6C2171F  (Vehicle, wheel, radians)
+          SET_VEHICLE_WHEEL_ROTATION_SPEED 0x35ED100D (Vehicle, wheel, speed)
+        FiveM exposes only GET_VEHICLE_WHEEL_STEERING_ANGLE (no setter), so under
+        FiveM SteerAvailable() stays false and steering replay falls back to the
+        SET_VEHICLE_STEER_BIAS path in vehicleclip.cpp.
+
         Resolved offsets (each = *(int32*)(match + k), from the matched disp32):
           Wheels Pointer  3B B7 ? ? ? ? 7D 0D  (fallback 8B 90 ...)   *(m+2) - 8   [both]
           Wheel Count     (same match)                                *(m+2)       [both]
