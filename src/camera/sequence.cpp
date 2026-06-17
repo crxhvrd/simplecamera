@@ -758,6 +758,21 @@ void Sequence_ScaleTimes(float factor) {
   Sequence_SortByTime();
 }
 
+// Translate EVERY keyframe's world position by (dx,dy,dz). The entity-lock world
+// anchor (lockEntPos) is shifted by the same delta: for a locked keyframe the
+// resolve is `keyframePos + (entityNow - lockEntPos)`, so moving both terms by
+// the same delta cancels — the keyframe keeps riding its entity and only genuine
+// world-space (unlocked) keyframes relocate. Rigid-locked keyframes resolve from
+// the entity + localOffset and are unaffected either way.
+void Sequence_TranslateAll(float dx, float dy, float dz) {
+  CameraSequence *s = Sequence_Active();
+  if (!s) return;
+  for (PoseKeyframe &p : s->poses) {
+    p.posX += dx; p.posY += dy; p.posZ += dz;
+    p.lockEntPosX += dx; p.lockEntPosY += dy; p.lockEntPosZ += dz;
+  }
+}
+
 bool Sequence_IsPlaying() { return s_Playing; }
 
 void Sequence_Play() {

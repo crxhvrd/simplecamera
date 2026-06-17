@@ -236,6 +236,13 @@ void Sequence_SortByTime(); // re-sort both arrays after time edits
 // longer, <1 = faster/shorter). Rewrites the keyframe t values in place.
 void Sequence_ScaleTimes(float factor);
 
+// Translate every pose keyframe's world position by (dx,dy,dz) metres, relocating
+// the whole shot without re-authoring it (e.g. re-using a loop at a new spot on
+// the map). The entity-lock world anchor is shifted by the same delta so locked
+// keyframes keep riding their entity and only world-space (unlocked) keyframes
+// actually move. Rotation / FOV / timing are untouched.
+void Sequence_TranslateAll(float dx, float dy, float dz);
+
 // ============================================================
 //  Persistence (SimpleCamera_Sequences.ini)
 // ============================================================

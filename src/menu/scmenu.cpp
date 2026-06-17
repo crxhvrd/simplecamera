@@ -69,12 +69,18 @@ static gtam::Menu g_SeqRender("CAMERA SEQUENCE", "Render to Images");
 static gtam::Menu g_SeqVehicle("CAMERA SEQUENCE", "Vehicle Clip");
 static gtam::Menu g_SeqVehicleList("CAMERA SEQUENCE", "Vehicles");
 static gtam::Menu g_SeqVehicleEdit("CAMERA SEQUENCE", "Vehicle");
+static gtam::Menu g_SeqMoveAll("CAMERA SEQUENCE", "Move All Keyframes");
 
 // Sequence editing mirrors. The framework binds raw pointers, but pose/event
 // vectors can reallocate (capture/add/sort), so editors bind to these stable
 // mirrors and we push them to the live element by index each frame.
 static float s_scrub = 0.0f;     // root scrub time (synced to playback)
 static float s_totalDur = 0.0f;  // pose-list "Total Duration" (scales times)
+// "Move All Keyframes" live offset (metres). The bound value shows the running
+// offset since the page was opened; s_moveLast* tracks the last-applied value so
+// each adjuster nudge translates only the delta. Reset to 0 on page push.
+static float s_moveOffX = 0.0f, s_moveOffY = 0.0f, s_moveOffZ = 0.0f;
+static float s_moveLastX = 0.0f, s_moveLastY = 0.0f, s_moveLastZ = 0.0f;
 static int s_editPose = -1;
 static int s_editEvent = -1;
 static struct { float t, posX, posY, posZ, pitch, yaw, roll, fov; int easeI, pathI; } s_pm;
@@ -671,6 +677,10 @@ static void RebuildPoseList() {
                           float cur = Sequence_TotalDuration();
                           if (cur > 0.01f && v > 0.01f) Sequence_ScaleTimes(v / cur);
                         }, "Stretch or compress every keyframe + event time at once.");
+  if (n >= 1)
+    g_SeqPoses.AddButton("Move All Keyframes...", [] { g_Ctrl.Push(&g_SeqMoveAll); },
+                         "Shift every keyframe's position together to relocate the whole "
+                         "shot to a new spot on the map without re-authoring it.");
   for (int i = 0; i < n; ++i) {
     char label[24]; sprintf_s(label, "Keyframe %d", i);
     g_SeqPoses.AddButton(label, [i] { s_editPose = i; g_Ctrl.Push(&g_SeqPoseEdit); },
@@ -1191,6 +1201,35 @@ static void BuildSeqTree() {
                           "Overwrite this keyframe with the camera's current pose.");
   g_SeqPoseEdit.AddButton("Delete Keyframe", [] { DeleteEditPose(); },
                           "Remove this keyframe from the sequence.");
+
+  // ---- Move All Keyframes (bulk translate the whole shot) ----
+  // Reset the running offset each time the page opens so the adjusters start at 0
+  // (the previous translation is already baked into the keyframes).
+  g_SeqMoveAll.onPush = [] {
+    s_moveOffX = s_moveOffY = s_moveOffZ = 0.0f;
+    s_moveLastX = s_moveLastY = s_moveLastZ = 0.0f;
+  };
+  g_SeqMoveAll.AddButton("Move to Camera", [] {
+    CameraSequence *s = Sequence_Active();
+    if (!s || s->poses.empty()) { SetStatusText("No keyframes to move"); return; }
+    float cx, cy, cz, pi, ya, ro;
+    GetCameraState(cx, cy, cz, pi, ya, ro);
+    const PoseKeyframe &k0 = s->poses[0];
+    Sequence_TranslateAll(cx - k0.posX, cy - k0.posY, cz - k0.posZ);
+    s_moveOffX = s_moveOffY = s_moveOffZ = 0.0f;
+    s_moveLastX = s_moveLastY = s_moveLastZ = 0.0f;
+    SetStatusText("Sequence moved — keyframe 0 placed at camera");
+  }, "Relocate the whole sequence so its FIRST keyframe sits at the current camera "
+     "position, keeping the shot's shape. Ideal for re-using a loop at a new location.");
+  g_SeqMoveAll.AddFloat("Move X / East (m)", &s_moveOffX, -1000000.0f, 1000000.0f, 0.5f, 2,
+                        [](float v) { Sequence_TranslateAll(v - s_moveLastX, 0.0f, 0.0f); s_moveLastX = v; },
+                        "Nudge every keyframe along world X: + east / - west. Resets on re-open.");
+  g_SeqMoveAll.AddFloat("Move Y / North (m)", &s_moveOffY, -1000000.0f, 1000000.0f, 0.5f, 2,
+                        [](float v) { Sequence_TranslateAll(0.0f, v - s_moveLastY, 0.0f); s_moveLastY = v; },
+                        "Nudge every keyframe along world Y: + north / - south.");
+  g_SeqMoveAll.AddFloat("Move Z / Up (m)", &s_moveOffZ, -1000000.0f, 1000000.0f, 0.5f, 2,
+                        [](float v) { Sequence_TranslateAll(0.0f, 0.0f, v - s_moveLastZ); s_moveLastZ = v; },
+                        "Nudge every keyframe along world Z: + up / - down.");
 
   // ---- Event editor (mirror-bound) ----
   g_SeqEventEdit.onPush = [] { LoadEventMirror(); };
